@@ -1,0 +1,25 @@
+{
+  "version": 2,
+
+  "buildCommand": "",
+  "installCommand": "npm install",
+  "outputDirectory": "",
+
+  "functions": {
+    "api/score.ts": {
+      "maxDuration": 60,
+      "memory": 1024,
+      "runtime": "nodejs20.x"
+    },
+    "api/crawl.ts": {
+      "maxDuration": 120,
+      "memory": 512,
+      "runtime": "nodejs20.x"
+    },
+    "api/debug.ts": {
+      "maxDuration": 120,
+      "memory": 512,
+      "runtime": "nodejs20.x"
+    }
+  }
+}
