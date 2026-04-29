@@ -1,3 +1,20 @@
+export interface SocialProfiles {
+  linkedin: string[];
+  facebook: string[];
+  instagram: string[];
+  x: string[];
+  youtube: string[];
+  tiktok: string[];
+  pinterest: string[];
+}
+
+export interface SchemaSignals {
+  faq: boolean;
+  productOrService: boolean;
+  localBusinessOrOrganization: boolean;
+  reviewOrAggregateRating: boolean;
+}
+
 export interface PageData {
   url: string;
   // ── Core content (Claude prompt inputs) ──────────────────────────────────
@@ -11,9 +28,18 @@ export interface PageData {
   // ── Scoring signals ───────────────────────────────────────────────────────
   isJSSite: boolean;
   ga4Id: string | null;
+  gtmId: string | null;
   businessName: string;
   hasForm: boolean;
   ctaTexts: string[];
+  wordCount: number;
+  unorderedListCount: number;
+  orderedListCount: number;
+  tableCount: number;
+  blockquoteCount: number;
+  socialProfiles: SocialProfiles;
+  schemaSignals: SchemaSignals;
+  dateModified: string | null;
 }
 
 export type ErrorType =
@@ -33,6 +59,7 @@ export interface CrawlError {
 export interface RobotsMeta {
   gptBotAllowed: boolean | null;
   claudeBotAllowed: boolean | null;
+  perplexityBotAllowed: boolean | null;
 }
 
 // Minimal handler interface — structurally compatible with both

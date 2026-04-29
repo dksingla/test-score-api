@@ -1,7 +1,8 @@
 import * as cheerio from "cheerio";
-import type { PageData } from "./types";
+import type { PageData, SchemaSignals, SocialProfiles } from "./types";
 
 const GA4_PATTERN = /G-[A-Z0-9]{4,}/;
+const GTM_PATTERN = /GTM-[A-Z0-9]{4,}/;
 
 const CTA_KEYWORDS = [
   "contact",
@@ -20,6 +21,120 @@ interface SiteAnalysis {
   needsJs: boolean;
   confidence: "high" | "medium" | "low";
   reasons: string[];
+}
+
+function emptySocialProfiles(): SocialProfiles {
+  return {
+    linkedin: [],
+    facebook: [],
+    instagram: [],
+    x: [],
+    youtube: [],
+    tiktok: [],
+    pinterest: [],
+  };
+}
+
+function parseJsonLike(value: string): unknown[] {
+  const parsed: unknown[] = [];
+
+  try {
+    parsed.push(JSON.parse(value));
+    return parsed;
+  } catch {
+    // Some sites concatenate multiple JSON objects in one script block.
+  }
+
+  for (const part of value.split(/\n\s*\n/)) {
+    try {
+      parsed.push(JSON.parse(part));
+    } catch {
+      // Ignore malformed fragments.
+    }
+  }
+
+  return parsed;
+}
+
+function walkJson(
+  node: unknown,
+  visit: (value: Record<string, unknown>) => void,
+): void {
+  if (Array.isArray(node)) {
+    node.forEach((item) => walkJson(item, visit));
+    return;
+  }
+
+  if (node && typeof node === "object") {
+    const obj = node as Record<string, unknown>;
+    visit(obj);
+    Object.values(obj).forEach((value) => walkJson(value, visit));
+  }
+}
+
+function coerceIsoDate(value: string): string | null {
+  const t = Date.parse(value);
+  return Number.isNaN(t) ? null : new Date(t).toISOString();
+}
+
+function pickLatestIsoDate(
+  ...values: Array<string | null | undefined>
+): string | null {
+  return (
+    values
+      .filter((value): value is string => Boolean(value))
+      .sort()
+      .at(-1) ?? null
+  );
+}
+
+function extractSchemaSignals(schemas: string[]): {
+  schemaSignals: SchemaSignals;
+  dateModified: string | null;
+} {
+  const detectedTypes = new Set<string>();
+  let latestDateModified: string | null = null;
+
+  for (const raw of schemas) {
+    for (const parsed of parseJsonLike(raw)) {
+      walkJson(parsed, (obj) => {
+        const atType = obj["@type"];
+        const values = Array.isArray(atType) ? atType : atType ? [atType] : [];
+
+        values.forEach((value) => {
+          if (typeof value === "string") {
+            detectedTypes.add(value.toLowerCase());
+          }
+        });
+
+        const dateModified = obj.dateModified;
+        if (typeof dateModified === "string") {
+          const iso = coerceIsoDate(dateModified);
+          if (iso && (!latestDateModified || iso > latestDateModified)) {
+            latestDateModified = iso;
+          }
+        }
+      });
+    }
+  }
+
+  const types = [...detectedTypes];
+  return {
+    schemaSignals: {
+      faq: types.some((type) => type.includes("faq")),
+      productOrService: types.some(
+        (type) => type.includes("product") || type.includes("service"),
+      ),
+      localBusinessOrOrganization: types.some(
+        (type) =>
+          type.includes("localbusiness") || type.includes("organization"),
+      ),
+      reviewOrAggregateRating: types.some(
+        (type) => type.includes("review") || type.includes("aggregaterating"),
+      ),
+    },
+    dateModified: latestDateModified,
+  };
 }
 
 function analyzeHtmlNeedsJs(html: string): SiteAnalysis {
@@ -127,7 +242,14 @@ function analyzeHtmlNeedsJs(html: string): SiteAnalysis {
   return { needsJs, confidence, reasons };
 }
 
-export function parseHTML(html: string, url: string): PageData {
+export function parseHTML(
+  html: string,
+  url: string,
+  metadata?: {
+    httpLastModified?: string | null;
+    sitemapLastmod?: string | null;
+  },
+): PageData {
   const $ = cheerio.load(html);
 
   // ── 1. Title ──────────────────────────────────────────────────────────────
@@ -165,6 +287,7 @@ export function parseHTML(html: string, url: string): PageData {
   const baseHost = hostname.replace(/^www\./, "");
   const seenOutbound = new Set<string>();
   const outboundLinks: string[] = [];
+  const socialProfiles = emptySocialProfiles();
 
   $("a[href]").each((_, el) => {
     const href = $(el).attr("href");
@@ -178,6 +301,23 @@ export function parseHTML(html: string, url: string): PageData {
       if (seenOutbound.has(resolved.href)) return;
       seenOutbound.add(resolved.href);
       outboundLinks.push(resolved.href);
+
+      const normalized = resolved.href.toLowerCase();
+      if (normalized.includes("linkedin.com/")) {
+        socialProfiles.linkedin.push(resolved.href);
+      } else if (normalized.includes("facebook.com/")) {
+        socialProfiles.facebook.push(resolved.href);
+      } else if (normalized.includes("instagram.com/")) {
+        socialProfiles.instagram.push(resolved.href);
+      } else if (normalized.includes("x.com/") || normalized.includes("twitter.com/")) {
+        socialProfiles.x.push(resolved.href);
+      } else if (normalized.includes("youtube.com/") || normalized.includes("youtu.be/")) {
+        socialProfiles.youtube.push(resolved.href);
+      } else if (normalized.includes("tiktok.com/")) {
+        socialProfiles.tiktok.push(resolved.href);
+      } else if (normalized.includes("pinterest.com/")) {
+        socialProfiles.pinterest.push(resolved.href);
+      }
     } catch {
       // Malformed href — skip
     }
@@ -192,6 +332,8 @@ export function parseHTML(html: string, url: string): PageData {
   // ── GA4 ───────────────────────────────────────────────────────────────────
   const ga4Match = html.match(GA4_PATTERN);
   const ga4Id = ga4Match ? ga4Match[0] : null;
+  const gtmMatch = html.match(GTM_PATTERN);
+  const gtmId = gtmMatch ? gtmMatch[0] : null;
 
   // ── Business name ─────────────────────────────────────────────────────────
   const businessName =
@@ -210,6 +352,23 @@ export function parseHTML(html: string, url: string): PageData {
     }
   });
 
+  const { schemaSignals, dateModified: schemaDateModified } =
+    extractSchemaSignals(schemas);
+  const httpLastModified =
+    typeof metadata?.httpLastModified === "string"
+      ? coerceIsoDate(metadata.httpLastModified)
+      : null;
+  const sitemapLastmod =
+    typeof metadata?.sitemapLastmod === "string"
+      ? coerceIsoDate(metadata.sitemapLastmod)
+      : null;
+  const dateModified = pickLatestIsoDate(
+    schemaDateModified,
+    httpLastModified,
+    sitemapLastmod,
+  );
+  const wordCount = bodyText ? bodyText.split(/\s+/).filter(Boolean).length : 0;
+
   return {
     url,
     title,
@@ -221,8 +380,25 @@ export function parseHTML(html: string, url: string): PageData {
     outboundLinks,
     isJSSite,
     ga4Id,
+    gtmId,
     businessName,
     hasForm,
     ctaTexts: [...new Set(ctaTexts)],
+    wordCount,
+    unorderedListCount: $("ul").length,
+    orderedListCount: $("ol").length,
+    tableCount: $("table").length,
+    blockquoteCount: $("blockquote").length,
+    socialProfiles: {
+      linkedin: [...new Set(socialProfiles.linkedin)],
+      facebook: [...new Set(socialProfiles.facebook)],
+      instagram: [...new Set(socialProfiles.instagram)],
+      x: [...new Set(socialProfiles.x)],
+      youtube: [...new Set(socialProfiles.youtube)],
+      tiktok: [...new Set(socialProfiles.tiktok)],
+      pinterest: [...new Set(socialProfiles.pinterest)],
+    },
+    schemaSignals,
+    dateModified,
   };
 }

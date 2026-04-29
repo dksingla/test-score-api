@@ -14,6 +14,14 @@ interface ClaudeScore {
 
 export type ClaudeResponse = Record<string, ClaudeScore>;
 
+const ABOUT_REGEX = /about|about us|our story|team/;
+const SERVICES_REGEX =
+  /services|products|solutions|what we do|how we help|service|solution/;
+const BLOG_REGEX =
+  /blog|articles|insights|resources|news|latest|post|article/;
+const PROOF_REGEX =
+  /case studies|case study|success stories|results|portfolio|work|testimonials|reviews/;
+
 // ─── Page scoring ─────────────────────────────────────────────────────────────
 
 /**
@@ -28,19 +36,19 @@ function scorePageForIntent(page: PageData): number {
   let score = 0;
 
   if (
-    url.includes("about") ||
-    h1.includes("about") ||
+    ABOUT_REGEX.test(url) ||
+    ABOUT_REGEX.test(h1) ||
     text.includes("about us")
   )
     score += 5;
   if (
-    url.includes("service") ||
-    url.includes("solution") ||
-    h1.includes("service")
+    SERVICES_REGEX.test(url) ||
+    SERVICES_REGEX.test(h1)
   )
     score += 5;
-  if (url.includes("blog") || url.includes("article") || h1.includes("blog"))
+  if (BLOG_REGEX.test(url) || BLOG_REGEX.test(h1))
     score += 4;
+  if (PROOF_REGEX.test(url) || PROOF_REGEX.test(h1)) score += 4;
   if (url.includes("contact") || h1.includes("contact")) score += 3;
 
   if (page.hasForm) score += 2;
@@ -63,19 +71,23 @@ function pickBestPages(pages: PageData[]) {
     about: [] as PageData[],
     services: [] as PageData[],
     blog: [] as PageData[],
+    proof: [] as PageData[],
   };
 
   for (const p of pages) {
     const text = [p.url, p.title, ...p.h1Tags].join(" ").toLowerCase();
 
-    if (/about|who we are|our story|team/.test(text)) {
+    if (ABOUT_REGEX.test(text)) {
       buckets.about.push(p);
     }
-    if (/service|solution|what we do|offer/.test(text)) {
+    if (SERVICES_REGEX.test(text)) {
       buckets.services.push(p);
     }
-    if (/blog|article|post|resource|insight/.test(text)) {
+    if (BLOG_REGEX.test(text)) {
       buckets.blog.push(p);
+    }
+    if (PROOF_REGEX.test(text)) {
+      buckets.proof.push(p);
     }
   }
 
@@ -95,9 +107,10 @@ function pickBestPages(pages: PageData[]) {
 
   return {
     homepage,
-    about: buckets.about.sort(sortFn)[0] ?? pages[1],
-    services: buckets.services.sort(sortFn)[0] ?? pages[2],
+    about: buckets.about.sort(sortFn)[0] ?? null,
+    services: buckets.services.sort(sortFn)[0] ?? null,
     blog: buckets.blog.sort(sortFn).slice(0, 3),
+    proof: buckets.proof.sort(sortFn).slice(0, 2),
   };
 }
 
@@ -140,6 +153,12 @@ function trimPage(p: PageData, isHomepage = false) {
     // Layer 1 hybrid signals — used by Claude for Q13 and Q14 evaluation
     hasForm: p.hasForm,
     ctaTexts: p.ctaTexts.slice(0, 5),
+    wordCount: p.wordCount,
+    unorderedListCount: p.unorderedListCount,
+    orderedListCount: p.orderedListCount,
+    tableCount: p.tableCount,
+    blockquoteCount: p.blockquoteCount,
+    dateModified: p.dateModified,
   };
 }
 
@@ -184,8 +203,32 @@ function buildSiteSummary(pages: PageData[]) {
     keywordFrequency,
     totalForms: pages.filter((p) => p.hasForm).length,
     totalCTAs: pages.reduce((sum, p) => sum + p.ctaTexts.length, 0),
-    ga4Present: pages.some((p) => p.ga4Id !== null),
-    schemaCount: pages.reduce((sum, p) => sum + p.schemas.length, 0),
+    analyticsPresent: pages.some((p) => p.ga4Id !== null || p.gtmId !== null),
+    schemaTypes: {
+      faq: pages.some((p) => p.schemaSignals.faq),
+      productOrService: pages.some((p) => p.schemaSignals.productOrService),
+      localBusinessOrOrganization: pages.some(
+        (p) => p.schemaSignals.localBusinessOrOrganization,
+      ),
+      reviewOrAggregateRating: pages.some(
+        (p) => p.schemaSignals.reviewOrAggregateRating,
+      ),
+    },
+    latestDateModified:
+      pages
+        .map((p) => p.dateModified)
+        .filter((value): value is string => Boolean(value))
+        .sort()
+        .at(-1) ?? null,
+    socialProfiles: {
+      linkedin: [...new Set(pages.flatMap((p) => p.socialProfiles.linkedin))],
+      facebook: [...new Set(pages.flatMap((p) => p.socialProfiles.facebook))],
+      instagram: [...new Set(pages.flatMap((p) => p.socialProfiles.instagram))],
+      x: [...new Set(pages.flatMap((p) => p.socialProfiles.x))],
+      youtube: [...new Set(pages.flatMap((p) => p.socialProfiles.youtube))],
+      tiktok: [...new Set(pages.flatMap((p) => p.socialProfiles.tiktok))],
+      pinterest: [...new Set(pages.flatMap((p) => p.socialProfiles.pinterest))],
+    },
     outboundDomains: [
       ...new Set(
         pages
@@ -210,6 +253,7 @@ interface Payload {
   about: ReturnType<typeof trimPage> | null;
   services: ReturnType<typeof trimPage> | null;
   blog: ReturnType<typeof trimPage>[];
+  proof: ReturnType<typeof trimPage>[];
   siteSummary: ReturnType<typeof buildSiteSummary>;
   isThinSite: boolean;
 }
@@ -343,6 +387,7 @@ ${JSON.stringify(
     about: payload.about,
     services: payload.services,
     blog: payload.blog,
+    proof: payload.proof,
   },
   null,
   2,
@@ -358,9 +403,10 @@ ${JSON.stringify(
 export function buildDebugPayload(pages: PageData[]): {
   selectedPages: {
     homepage: PageData | undefined;
-    about: PageData | undefined;
-    services: PageData | undefined;
+    about: PageData | null;
+    services: PageData | null;
     blog: PageData[];
+    proof: PageData[];
   };
   trimmedPayload: Payload;
   promptText: string;
@@ -374,6 +420,7 @@ export function buildDebugPayload(pages: PageData[]): {
     about: selected.about ? trimPage(selected.about) : null,
     services: selected.services ? trimPage(selected.services) : null,
     blog: selected.blog.map((p) => trimPage(p)),
+    proof: selected.proof.map((p) => trimPage(p)),
     siteSummary: buildSiteSummary(pages),
     isThinSite,
   };
@@ -384,6 +431,7 @@ export function buildDebugPayload(pages: PageData[]): {
       about: selected.about,
       services: selected.services,
       blog: selected.blog,
+      proof: selected.proof,
     },
     trimmedPayload,
     promptText: buildPrompt(trimmedPayload),
@@ -405,6 +453,7 @@ export async function getClaudeScores(
     about: selected.about ? trimPage(selected.about) : null,
     services: selected.services ? trimPage(selected.services) : null,
     blog: selected.blog.map((p) => trimPage(p)),
+    proof: selected.proof.map((p) => trimPage(p)),
     siteSummary: buildSiteSummary(pages),
     isThinSite,
   };

@@ -62,14 +62,16 @@ function calcQ2(
   const hasSchema = layer1
     ? layer1.technical.hasSchema
     : homepage.schemas.length > 0;
-  const hasMeta = layer1
-    ? layer1.technical.hasMetaDescription
-    : homepage.metaDescription.length > 0;
-  const hasH1 = layer1 ? layer1.technical.hasH1 : homepage.h1Tags.length > 0;
+  const hasAnalytics = layer1
+    ? layer1.technical.hasAnalyticsTracking
+    : Boolean(homepage.ga4Id || homepage.gtmId);
   const aiAllowed = layer1
     ? layer1.robots.gptBotAllowed !== false &&
-      layer1.robots.claudeBotAllowed !== false
-    : robots.gptBotAllowed !== false && robots.claudeBotAllowed !== false;
+      layer1.robots.claudeBotAllowed !== false &&
+      layer1.robots.perplexityBotAllowed !== false
+    : robots.gptBotAllowed !== false &&
+      robots.claudeBotAllowed !== false &&
+      robots.perplexityBotAllowed !== false;
 
   const passed: string[] = [];
   let earned = 0;
@@ -79,13 +81,9 @@ function calcQ2(
     earned++;
     passed.push("schema markup present");
   }
-  if (hasMeta) {
+  if (hasAnalytics) {
     earned++;
-    passed.push("meta description present");
-  }
-  if (hasH1) {
-    earned++;
-    passed.push("H1 tag present");
+    passed.push("analytics tracking present");
   }
   if (aiAllowed) {
     earned++;
@@ -96,13 +94,13 @@ function calcQ2(
   const reason =
     passed.length > 0
       ? passed.join("; ")
-      : "Missing schema, meta description, H1, and AI crawler access";
+      : "Missing schema, analytics tracking, and AI crawler access";
 
   return { score, reason };
 }
 
 /**
- * Q3 — Analytics tracking: GA4 measurement ID detected in page source.
+ * Q3 — Analytics tracking: GA4 or GTM detected in page source.
  */
 function calcQ3(pages: PageData[]): ClaudeScore {
   const homepage = pages[0];
@@ -112,7 +110,10 @@ function calcQ3(pages: PageData[]): ClaudeScore {
   if (homepage.ga4Id) {
     return { score: 2, reason: `GA4 tracking detected (${homepage.ga4Id})` };
   }
-  return { score: 0, reason: "No GA4 or analytics tracking script detected" };
+  if (homepage.gtmId) {
+    return { score: 2, reason: `GTM container detected (${homepage.gtmId})` };
+  }
+  return { score: 0, reason: "No GA4 or GTM tracking script detected" };
 }
 
 // ─── Pillar aggregation ───────────────────────────────────────────────────────
@@ -157,7 +158,11 @@ function calcConfidence(
   if (pages[0]?.isJSSite) points -= 1;
 
   // Robots.txt blocking AI crawlers signals restricted access
-  if (robots.gptBotAllowed === false || robots.claudeBotAllowed === false) {
+  if (
+    robots.gptBotAllowed === false ||
+    robots.claudeBotAllowed === false ||
+    robots.perplexityBotAllowed === false
+  ) {
     points -= 1;
   }
 

@@ -5,9 +5,6 @@ import { collectLayer1Signals, fetchPageSpeed } from "../utils/layer1";
 
 import type { ApiRequest, ApiResponse } from "../utils/types";
 
-// Local crawl (incl. Playwright) + optional Olostep need a combined budget.
-const CRAWL_TIMEOUT_MS = 110_000;
-
 interface ErrorBody {
   success: false;
   error: string;
@@ -42,13 +39,13 @@ export default async function handler(
   }
 
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), CRAWL_TIMEOUT_MS);
 
   try {
     // Start PageSpeed immediately — does not depend on crawl output.
     const pageSpeedPromise = fetchPageSpeed(url).catch(() => ({
       pageSpeedScore: null,
       mobileFriendly: null,
+      error: "PageSpeed request failed",
     }));
 
     // ─────────────────────────────────────────────
@@ -85,6 +82,17 @@ export default async function handler(
     res.status(200).json({
       success: true,
       data: signals,
+      crawl: {
+        pagesCrawled: crawlResult.pages.length,
+        pages: crawlResult.pages.map((page) => ({
+          url: page.url,
+          wordCount: page.wordCount,
+          unorderedListCount: page.unorderedListCount,
+          orderedListCount: page.orderedListCount,
+          tableCount: page.tableCount,
+          blockquoteCount: page.blockquoteCount,
+        })),
+      },
       crawl_errors:
         crawlResult.errors.length > 0 ? crawlResult.errors : undefined,
     });
@@ -92,7 +100,5 @@ export default async function handler(
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";
     return sendError(res, 500, message);
-  } finally {
-    clearTimeout(timer);
   }
 }

@@ -10,9 +10,6 @@ import { ratelimit } from "../utils/rateLimiter";
 import type { ApiRequest, ApiResponse } from "../utils/types";
 import type { ClaudeResponse } from "../utils/claude";
 import type { Layer1Signals } from "../utils/layer1";
-
-// Crawl + optional Olostep — bounded so Claude still fits in Vercel maxDuration (60s).
-const CRAWL_PHASE_TIMEOUT_MS = 38_000;
 const CLAUDE_TIMEOUT_MS = 20_000;
 
 interface ErrorBody {
@@ -94,16 +91,13 @@ export default async function handler(
   }
 
   const crawlController = new AbortController();
-  const crawlTimer = setTimeout(
-    () => crawlController.abort(),
-    CRAWL_PHASE_TIMEOUT_MS,
-  );
 
   try {
     // Start PageSpeed immediately — does not depend on crawl output.
     const pageSpeedPromise = fetchPageSpeed(url).catch(() => ({
       pageSpeedScore: null,
       mobileFriendly: null,
+      error: "PageSpeed request failed",
     }));
 
     // ─────────────────────────────────────────────
@@ -224,7 +218,5 @@ export default async function handler(
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";
     return sendError(res, 500, message);
-  } finally {
-    clearTimeout(crawlTimer);
   }
 }

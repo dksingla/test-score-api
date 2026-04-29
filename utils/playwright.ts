@@ -1,6 +1,8 @@
 // Keep this slightly above the 8 s external wrapper in crawler.ts so Playwright
 // self-terminates cleanly before the outer Promise.race resolves null.
-const PLAYWRIGHT_TIMEOUT_MS = 20000;
+import { isCloudflareChallengeHtml } from "./cloudflareCrawl";
+
+const PLAYWRIGHT_TIMEOUT_MS = 35000;
 
 // Realistic desktop UA — helps pass basic JS bot-detection checks.
 // Note: Cloudflare Enterprise and similar WAFs also fingerprint the TLS
@@ -37,44 +39,60 @@ export async function renderWithPlaywright(
         timeout: PLAYWRIGHT_TIMEOUT_MS,
       });
 
-      // ── Cloudflare IUAM challenge handling ─────────────────────────────────
-      // Cloudflare IUAM shows "Just a moment..." then runs a JS challenge for
-      // ~5-10 s before automatically redirecting to the real page.
-      // Instead of a fixed wait, we poll until the title changes — this catches
-      // the redirect as soon as it happens (often ~6 s) without over-waiting.
-      const isCfChallenge =
-        (await page.title()) === "Just a moment..." ||
-        (await page.title()).toLowerCase().includes("just a moment");
+      const getPageMarkup = async (): Promise<string> => {
+        try {
+          const title = await page.title();
+          const bodyText = await page.locator("body").innerText().catch(() => "");
+          return `<title>${title}</title>\n${bodyText}`;
+        } catch {
+          return "";
+        }
+      };
+
+      const isCfChallenge = isCloudflareChallengeHtml(await getPageMarkup());
 
       if (isCfChallenge) {
         console.log(
           "[playwright] Cloudflare challenge detected — waiting for it to resolve...",
         );
         try {
-          // Wait up to 15 s for the title to change away from the challenge page.
-          // Passed as a string so TypeScript doesn't complain about `document`
-          // (this runs in the browser context, not Node.js).
           await page.waitForFunction(
-            "!document.title.toLowerCase().includes('just a moment') && document.title !== ''",
-            { timeout: 15000, polling: 500 },
+            `(() => {
+              const title = document.title.toLowerCase();
+              const bodyText = document.body ? document.body.innerText.toLowerCase() : "";
+              const pageText = title + "\\n" + bodyText;
+
+              return !(
+                pageText.includes("just a moment") ||
+                pageText.includes("performing security verification") ||
+                pageText.includes("verification successful. waiting for") ||
+                pageText.includes("this website uses a security service to protect against malicious bots") ||
+                pageText.includes("performance and security by cloudflare") ||
+                pageText.includes("ray id:")
+              );
+            })()`,
+            { timeout: 25000, polling: 500 },
           );
-          // Extra 2 s after redirect so the real page can finish loading
           await page.waitForTimeout(2000);
           console.log(
             "[playwright] challenge resolved — real page title:",
             await page.title(),
           );
         } catch {
-          // Challenge didn't resolve in 15 s — likely Turnstile or Enterprise CF
           console.log("[playwright] challenge did not resolve in time");
         }
       } else {
-        // Normal page — 2 s settle is enough
         await page.waitForTimeout(2000);
       }
 
+      const content = await page.content();
+      if (isCloudflareChallengeHtml(content)) {
+        console.log("[playwright] final page still looks like Cloudflare challenge");
+        return null;
+      }
+
       console.log("[playwright] page content loaded");
-      return await page.content();
+      return content;
     } finally {
       await browser.close();
       console.log("browser closed");

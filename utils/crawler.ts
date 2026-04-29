@@ -1,37 +1,46 @@
 import axios from "axios";
 import * as cheerio from "cheerio";
-import type { PageData, CrawlError, ErrorType } from "./types";
+import {
+  fetchCloudflareCrawlResult,
+  isCloudflareChallengeHtml,
+} from "./cloudflareCrawl";
+import { discoverSitemapUrls } from "./layer1";
 import { parseHTML } from "./parser";
-import { renderWithPlaywright } from "../utils/playwright";
+import { PAGE_TYPE_RULES } from "./pageSelectionRules";
+import { renderWithPlaywright } from "./playwright";
+import type { CrawlError, ErrorType, PageData } from "./types";
 
-// Realistic browser UA — many sites actively block bot-identified agents
 const CRAWL_HEADERS = {
   "User-Agent":
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
   Accept: "text/html,application/xhtml+xml",
 };
 
-const DEFAULT_MAX_HTML_BYTES = 2 * 1024 * 1024; // 2 MB
+const DEFAULT_MAX_HTML_BYTES = 2 * 1024 * 1024;
 const REQUEST_TIMEOUT_MS = 8000;
-// Must cover: nav timeout (20 s) + CF challenge wait (15 s) + settle (2 s).
 const PLAYWRIGHT_WRAPPER_TIMEOUT_MS = 40000;
-const MAX_PAGES = 6;
-const CONCURRENCY = 3;
+const MAX_PAGES = 15;
+const PROBE_CONCURRENCY = 4;
+const FETCH_CONCURRENCY = 3;
 const RETRY_DELAY_MS = 500;
 
-/**
- * Priority sub-paths (partial match). Earlier entries win.
- */
-const PRIORITY_PATHS = [
-  "/about",
-  "/services",
-  "/blog",
-  "/resources",
-  "/portfolio",
-  "/contact",
-];
+interface LinkCandidate {
+  url: string;
+  anchorText: string;
+  isNav: boolean;
+  order: number;
+}
 
-// ─── URL helpers ──────────────────────────────────────────────────────────────
+interface ProtectionProbeResult {
+  protected: boolean;
+  vendor: "cloudflare" | "waf" | null;
+}
+
+interface PageArtifact {
+  html: string;
+  page: PageData;
+  source: "local" | "playwright" | "cloudflare";
+}
 
 export function normalizeUrl(raw: string): string {
   const trimmed = raw.trim();
@@ -39,9 +48,40 @@ export function normalizeUrl(raw: string): string {
   return `https://${trimmed}`;
 }
 
-// ─── Error classification ─────────────────────────────────────────────────────
+function canonicalizeUrl(raw: string): string {
+  try {
+    const url = new URL(raw);
+    url.hash = "";
+    if (
+      (url.protocol === "https:" && url.port === "443") ||
+      (url.protocol === "http:" && url.port === "80")
+    ) {
+      url.port = "";
+    }
+    if (url.pathname !== "/") {
+      url.pathname = url.pathname.replace(/\/+$/, "") || "/";
+    }
+    return url.toString();
+  } catch {
+    return raw;
+  }
+}
 
 function classifyError(err: unknown): { type: ErrorType; message: string } {
+  if (err instanceof Error) {
+    const lowered = err.message.toLowerCase();
+    if (
+      lowered.includes("cloudflare content returned no html") ||
+      lowered.includes("cloudflare content returned challenge page") ||
+      lowered.includes(
+        "cloudflare content returned challenge page or no html",
+      ) ||
+      lowered.includes("cloudflare content rate limited")
+    ) {
+      return { type: "blocked", message: err.message };
+    }
+  }
+
   if (axios.isAxiosError(err)) {
     if (
       err.code === "ECONNABORTED" ||
@@ -70,35 +110,99 @@ function classifyError(err: unknown): { type: ErrorType; message: string } {
   };
 }
 
-// ─── HTTP ─────────────────────────────────────────────────────────────────────
+function isChallengePageHtml(html: string): boolean {
+  return isCloudflareChallengeHtml(html);
+}
 
-/**
- * Fetches raw HTML with one automatic retry on failure.
- * Respects the global AbortSignal. Slices oversized responses early so large
- * HTML never bloats memory downstream.
- */
-async function fetchHTML(url: string, signal: AbortSignal): Promise<string> {
+function logCrawlFailure(url: string, stage: string, err: unknown): void {
+  const classified = classifyError(err);
+
+  if (
+    err instanceof Error &&
+    (err.message === "Cloudflare content fetch returned no HTML" ||
+      err.message ===
+        "Cloudflare content returned challenge page or no HTML") &&
+    stage === "page-fetch"
+  ) {
+    return;
+  }
+
+  if (axios.isAxiosError(err)) {
+    const headers = err.response?.headers ?? {};
+    const bodyPreview =
+      typeof err.response?.data === "string"
+        ? err.response.data.replace(/\s+/g, " ").slice(0, 240)
+        : null;
+
+    console.error("[crawl] request failed", {
+      stage,
+      url,
+      type: classified.type,
+      message: classified.message,
+      axiosCode: err.code ?? null,
+      status: err.response?.status ?? null,
+      server: typeof headers["server"] === "string" ? headers["server"] : null,
+      cfRay: typeof headers["cf-ray"] === "string" ? headers["cf-ray"] : null,
+      cfMitigated:
+        typeof headers["cf-mitigated"] === "string"
+          ? headers["cf-mitigated"]
+          : null,
+      contentType:
+        typeof headers["content-type"] === "string"
+          ? headers["content-type"]
+          : null,
+      bodyPreview,
+    });
+    return;
+  }
+
+  console.error("[crawl] request failed", {
+    stage,
+    url,
+    type: classified.type,
+    message: classified.message,
+    error:
+      err instanceof Error ? { name: err.name, message: err.message } : err,
+  });
+}
+
+async function fetchHTML(
+  url: string,
+  signal: AbortSignal,
+): Promise<{ html: string; lastModified: string | null }> {
   const debugNoLimit = process.env.CRAWLER_DEBUG_NO_LIMIT === "1";
   let lastErr: unknown;
 
   for (let attempt = 0; attempt <= 1; attempt++) {
     if (signal.aborted) throw new Error("Global timeout exceeded");
     try {
-      const { data } = await axios.get<string>(url, {
+      const { data, headers } = await axios.get<string>(url, {
         timeout: REQUEST_TIMEOUT_MS,
-        // -1 = unlimited (axios). Only enable for debug mode.
         maxContentLength: debugNoLimit ? -1 : DEFAULT_MAX_HTML_BYTES,
         maxRedirects: 5,
         headers: CRAWL_HEADERS,
         signal,
       });
 
-      // Trim early in normal mode — avoids allocating large strings downstream.
-      // In debug mode, return the full HTML.
       if (typeof data === "string") {
-        return debugNoLimit ? data : data.slice(0, DEFAULT_MAX_HTML_BYTES);
+        if (isChallengePageHtml(data)) {
+          throw new Error("Cloudflare verification page returned");
+        }
+        return {
+          html: debugNoLimit ? data : data.slice(0, DEFAULT_MAX_HTML_BYTES),
+          lastModified:
+            typeof headers["last-modified"] === "string"
+              ? headers["last-modified"]
+              : null,
+        };
       }
-      return data;
+      return {
+        html: data,
+        lastModified:
+          typeof headers["last-modified"] === "string"
+            ? headers["last-modified"]
+            : null,
+      };
     } catch (err) {
       lastErr = err;
       if (signal.aborted) break;
@@ -113,13 +217,6 @@ async function fetchHTML(url: string, signal: AbortSignal): Promise<string> {
   throw lastErr;
 }
 
-// ─── Playwright wrapper ───────────────────────────────────────────────────────
-
-/**
- * Wraps renderWithPlaywright with a hard external timeout.
- * Playwright does not respect AbortSignal, so we race it against a timer
- * that resolves null (not rejects) so the caller can fall back gracefully.
- */
 async function renderWithTimeout(url: string): Promise<string | null> {
   return Promise.race([
     renderWithPlaywright(url),
@@ -128,8 +225,6 @@ async function renderWithTimeout(url: string): Promise<string | null> {
     ),
   ]);
 }
-
-// ─── Concurrency limiter ──────────────────────────────────────────────────────
 
 async function withConcurrency<T>(
   tasks: (() => Promise<T>)[],
@@ -155,23 +250,19 @@ async function withConcurrency<T>(
   return results;
 }
 
-// ─── Link extraction ──────────────────────────────────────────────────────────
-
-/**
- * Returns deduplicated same-domain absolute URLs found in the given HTML.
- * Strips leading "www." before comparing so that example.com and
- * www.example.com are treated as the same site, and blog.example.com
- * is accepted as a subdomain while notexample.com is not.
- */
-function extractSameDomainLinks(html: string, baseUrl: string): string[] {
+function extractSameDomainLinks(
+  html: string,
+  baseUrl: string,
+): LinkCandidate[] {
   const baseHost = new URL(baseUrl).hostname.replace(/^www\./, "");
   const seen = new Set<string>();
-  const links: string[] = [];
+  const links: LinkCandidate[] = [];
 
   const $ = cheerio.load(html);
   $("a[href]").each((_, el) => {
     const href = $(el).attr("href");
     if (!href) return;
+
     try {
       const resolved = new URL(href, baseUrl);
       if (!["http:", "https:"].includes(resolved.protocol)) return;
@@ -182,62 +273,381 @@ function extractSameDomainLinks(html: string, baseUrl: string): string[] {
       resolved.hash = "";
       if (seen.has(resolved.href)) return;
       seen.add(resolved.href);
-      links.push(resolved.href);
+
+      links.push({
+        url: resolved.href,
+        anchorText: $(el).text().replace(/\s+/g, " ").trim().toLowerCase(),
+        isNav: $(el).closest("nav, header").length > 0,
+        order: links.length,
+      });
     } catch {
-      // Malformed URL — skip silently
+      // Skip malformed URLs.
     }
   });
 
   return links;
 }
 
-// ─── Link scoring ─────────────────────────────────────────────────────────────
-
-/**
- * Rates a URL by how likely it is to contain high-value content for scoring.
- * Higher = fetched first. Shallow paths score well because deep nesting
- * usually means paginated posts or user-generated content.
- */
 function scoreLink(url: string): number {
-  let path: string;
   try {
-    path = new URL(url).pathname.toLowerCase();
+    const pathname = new URL(url).pathname.toLowerCase().replace(/\/$/, "");
+    const segments = pathname.split("/").filter(Boolean);
+    let score = 0;
+
+    if (pathname === "" || pathname === "/") score += 120;
+    if (segments.length <= 2) score += 60;
+    else if (segments.length === 3) score += 30;
+
+    const allSlugRules = Object.values(PAGE_TYPE_RULES).flatMap(
+      (rule) => rule.slugs,
+    );
+    if (matchesSlug(pathname, allSlugRules)) score += 50;
+    if (/tag|category|author|page\/\d+/i.test(pathname)) score -= 40;
+
+    return score;
   } catch {
     return 0;
   }
+}
 
-  let score = 0;
-  if (path === "/" || path === "") score += 100;
-  if (path.includes("about")) score += 80;
-  if (path.includes("service")) score += 80;
-  if (path.includes("blog")) score += 70;
-  if (path.split("/").length <= 3) score += 50; // shallow path = usually more important
+function matchesNavText(text: string, values: readonly string[]): boolean {
+  return values.some((value) => text === value || text.includes(value));
+}
+
+function matchesSlug(pathname: string, values: readonly string[]): boolean {
+  return values.some(
+    (value) => pathname === value || pathname.startsWith(`${value}/`),
+  );
+}
+
+function matchesPageType(
+  candidate: Pick<LinkCandidate, "anchorText" | "url">,
+  type: keyof typeof PAGE_TYPE_RULES,
+): boolean {
+  const rule = PAGE_TYPE_RULES[type];
+  let pathname = "";
+
+  try {
+    pathname = new URL(candidate.url).pathname.toLowerCase().replace(/\/$/, "");
+  } catch {
+    return false;
+  }
+
+  const anchorText = candidate.anchorText.toLowerCase();
+  return (
+    matchesNavText(anchorText, rule.navTexts) ||
+    matchesSlug(pathname, rule.slugs)
+  );
+}
+
+function rankCandidate(
+  candidate: LinkCandidate,
+  type?: keyof typeof PAGE_TYPE_RULES,
+): number {
+  let score = scoreLink(candidate.url);
+
+  if (candidate.isNav) score += 50;
+  if (candidate.anchorText.length > 0) score += 10;
+  score += Math.max(0, 20 - candidate.order);
+
+  if (type && matchesPageType(candidate, type)) {
+    score += 120;
+  }
 
   return score;
 }
 
-// ─── Sitemap discovery ────────────────────────────────────────────────────────
+function dedupeUrls(urls: string[]): string[] {
+  const seen = new Set<string>();
+  const deduped: string[] = [];
 
-/**
- * Fetches /sitemap.xml and extracts all <loc> URLs.
- * Never throws — returns an empty array on any failure.
- */
-async function fetchSitemapUrls(baseUrl: string): Promise<string[]> {
+  for (const url of urls) {
+    const canonical = canonicalizeUrl(url);
+    if (seen.has(canonical)) continue;
+    seen.add(canonical);
+    deduped.push(url);
+  }
+
+  return deduped;
+}
+
+function selectTopCandidate(
+  candidates: LinkCandidate[],
+  type: keyof typeof PAGE_TYPE_RULES,
+  exclude: Set<string>,
+): string | null {
+  const match = candidates
+    .filter((candidate) => !exclude.has(candidate.url))
+    .filter((candidate) => matchesPageType(candidate, type))
+    .sort((a, b) => rankCandidate(b, type) - rankCandidate(a, type))[0];
+
+  return match?.url ?? null;
+}
+
+function isDirectChildPage(parentUrl: string, candidateUrl: string): boolean {
   try {
-    const { origin } = new URL(baseUrl);
-    const { data } = await axios.get<string>(`${origin}/sitemap.xml`, {
-      timeout: 5000,
-      headers: CRAWL_HEADERS,
-    });
+    const parent = new URL(parentUrl);
+    const child = new URL(candidateUrl);
+    if (parent.hostname !== child.hostname) return false;
 
-    const matches = (data as string).match(/<loc>(.*?)<\/loc>/g) ?? [];
-    return matches.map((m) => m.replace(/<\/?loc>/g, "").trim());
+    const parentPath = parent.pathname.replace(/\/$/, "");
+    const childPath = child.pathname.replace(/\/$/, "");
+    if (!parentPath || childPath === parentPath) return false;
+    if (!childPath.startsWith(`${parentPath}/`)) return false;
+
+    const remainder = childPath.slice(parentPath.length + 1);
+    return remainder.length > 0 && !remainder.includes("/");
   } catch {
-    return [];
+    return false;
   }
 }
 
-// ─── Main crawl ───────────────────────────────────────────────────────────────
+function isLikelyBlogPost(
+  listingUrl: string,
+  candidate: LinkCandidate,
+): boolean {
+  try {
+    const listingPath = new URL(listingUrl).pathname.replace(/\/$/, "");
+    const path = new URL(candidate.url).pathname.replace(/\/$/, "");
+    if (path === listingPath) return false;
+    if (candidate.isNav) return false;
+    if (/tag|category|author|page\/\d+/i.test(path)) return false;
+
+    if (
+      path.startsWith(`${listingPath}/`) ||
+      /\b(20\d{2}|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\b/i.test(
+        candidate.anchorText,
+      )
+    ) {
+      return true;
+    }
+
+    const segments = path.split("/").filter(Boolean);
+    return segments.length >= 2;
+  } catch {
+    return false;
+  }
+}
+
+function mergeCandidateLists(
+  baseUrl: string,
+  homepageLinks: LinkCandidate[],
+  sitemapLinks: string[],
+): LinkCandidate[] {
+  const { origin } = new URL(baseUrl);
+  const homepageHref = `${origin}/`;
+  const baseHost = new URL(baseUrl).hostname.replace(/^www\./, "");
+  const baseCanonical = canonicalizeUrl(baseUrl);
+  const homepageCanonical = canonicalizeUrl(homepageHref);
+
+  const sitemapCandidates = sitemapLinks
+    .filter((url) => {
+      try {
+        const host = new URL(url).hostname.replace(/^www\./, "");
+        return host === baseHost || host.endsWith(`.${baseHost}`);
+      } catch {
+        return false;
+      }
+    })
+    .map(
+      (url, index): LinkCandidate => ({
+        url,
+        anchorText: "",
+        isNav: false,
+        order: homepageLinks.length + index,
+      }),
+    );
+
+  const merged = new Map<string, LinkCandidate>();
+  for (const candidate of [...homepageLinks, ...sitemapCandidates]) {
+    const candidateCanonical = canonicalizeUrl(candidate.url);
+    if (
+      candidateCanonical === baseCanonical ||
+      candidateCanonical === homepageCanonical ||
+      merged.has(candidateCanonical)
+    ) {
+      const existing = merged.get(candidateCanonical);
+      if (!existing || rankCandidate(candidate) > rankCandidate(existing)) {
+        merged.set(candidateCanonical, candidate);
+      }
+      continue;
+    }
+    merged.set(candidateCanonical, candidate);
+  }
+
+  return [...merged.values()];
+}
+
+function buildPlannedUrlOrder(
+  candidates: LinkCandidate[],
+  baseUrl: string,
+  wasJSSite: boolean,
+): {
+  coreUrls: string[];
+  fillUrls: string[];
+} {
+  const baseHostname = new URL(baseUrl).hostname;
+  const filteredCandidates = wasJSSite
+    ? candidates.filter((candidate) => {
+        try {
+          return new URL(candidate.url).hostname !== baseHostname;
+        } catch {
+          return false;
+        }
+      })
+    : candidates;
+
+  const selected = new Set<string>();
+  const coreUrls = [
+    selectTopCandidate(filteredCandidates, "about", selected),
+    selectTopCandidate(filteredCandidates, "services", selected),
+    selectTopCandidate(filteredCandidates, "blog", selected),
+    selectTopCandidate(filteredCandidates, "caseStudies", selected),
+    selectTopCandidate(filteredCandidates, "testimonials", selected),
+  ].filter((url): url is string => Boolean(url));
+
+  coreUrls.forEach((url) => selected.add(url));
+
+  const fillUrls = filteredCandidates
+    .filter((candidate) => !selected.has(candidate.url))
+    .sort((a, b) => rankCandidate(b) - rankCandidate(a))
+    .map((candidate) => candidate.url);
+
+  return { coreUrls, fillUrls };
+}
+
+export async function probeProtection(
+  url: string,
+  signal: AbortSignal,
+): Promise<ProtectionProbeResult> {
+  try {
+    const inspectResponse = (
+      status: number,
+      headers: Record<string, unknown>,
+      body: string,
+    ): ProtectionProbeResult => {
+      const server =
+        typeof headers["server"] === "string" ? headers["server"] : "";
+      const hasCf =
+        typeof headers["cf-ray"] === "string" ||
+        typeof headers["cf-cache-status"] === "string" ||
+        typeof headers["cf-mitigated"] === "string" ||
+        server.toLowerCase().includes("cloudflare");
+      const hasWafHint =
+        typeof headers["x-sucuri-id"] === "string" ||
+        typeof headers["x-sucuri-block"] === "string" ||
+        typeof headers["x-akamai-transformed"] === "string" ||
+        typeof headers["x-amzn-remapped-host"] === "string" ||
+        typeof headers["x-amz-cf-id"] === "string";
+
+      const normalizedBody = body.toLowerCase().slice(0, 500);
+      const cfChallengeBody = isChallengePageHtml(normalizedBody);
+      const looksBlocked =
+        status === 401 || status === 403 || status === 429 || status === 503;
+
+      if ((looksBlocked || cfChallengeBody) && hasCf) {
+        return { protected: true, vendor: "cloudflare" };
+      }
+      if (looksBlocked && hasWafHint) {
+        return { protected: true, vendor: "waf" };
+      }
+
+      return { protected: false, vendor: null };
+    };
+
+    const headRes = await axios.head(url, {
+      timeout: 3500,
+      maxRedirects: 3,
+      headers: CRAWL_HEADERS,
+      validateStatus: () => true,
+      signal,
+    });
+
+    const headProbe = inspectResponse(headRes.status, headRes.headers, "");
+    if (headProbe.protected) {
+      return headProbe;
+    }
+
+    const res = await axios.get<string>(url, {
+      timeout: 3500,
+      maxRedirects: 3,
+      headers: CRAWL_HEADERS,
+      validateStatus: () => true,
+      signal,
+    });
+
+    return inspectResponse(
+      res.status,
+      res.headers,
+      typeof res.data === "string" ? res.data : "",
+    );
+  } catch {
+    return { protected: false, vendor: null };
+  }
+}
+
+async function fetchLocalArtifact(
+  url: string,
+  signal: AbortSignal,
+): Promise<PageArtifact> {
+  const { html, lastModified } = await fetchHTML(url, signal);
+  if (isChallengePageHtml(html)) {
+    throw new Error("Cloudflare verification page returned");
+  }
+  const parsed = parseHTML(html, url, {
+    httpLastModified: lastModified,
+  });
+
+  if (parsed.isJSSite) {
+    const rendered = await renderWithTimeout(url);
+    if (rendered && !isChallengePageHtml(rendered)) {
+      return {
+        html: rendered,
+        page: parseHTML(rendered, url, {
+          httpLastModified: lastModified,
+        }),
+        source: "playwright",
+      };
+    }
+  }
+
+  return {
+    html,
+    page: parsed,
+    source: "local",
+  };
+}
+
+async function fetchHomepageArtifact(
+  baseUrl: string,
+  signal: AbortSignal,
+): Promise<PageArtifact> {
+  try {
+    const artifact = await fetchLocalArtifact(baseUrl, signal);
+    console.log("[crawl] homepage fetched", {
+      url: baseUrl,
+      source: artifact.source,
+    });
+    return artifact;
+  } catch (err) {
+    logCrawlFailure(baseUrl, "homepage-fetch", err);
+    const rendered = await renderWithTimeout(baseUrl);
+    if (rendered && !isChallengePageHtml(rendered)) {
+      const artifact: PageArtifact = {
+        html: rendered,
+        page: parseHTML(rendered, baseUrl),
+        source: "playwright",
+      };
+      console.log("[crawl] homepage fetched", {
+        url: baseUrl,
+        source: artifact.source,
+      });
+      return artifact;
+    }
+
+    throw err;
+  }
+}
 
 export async function crawlPages(
   baseUrl: string,
@@ -245,149 +655,300 @@ export async function crawlPages(
 ): Promise<{ pages: PageData[]; errors: CrawlError[] }> {
   const pages: PageData[] = [];
   const errors: CrawlError[] = [];
+  console.log(`[crawl] Starting crawl for ${baseUrl}`);
+  const pageUrlSet = new Set<string>();
+  const failedUrlSet = new Set<string>();
+  let usedCloudflareSeedCrawl = false;
+  const homepageProbe = await probeProtection(baseUrl, signal);
 
-  // Per-crawl deduplication cache.
-  // Prevents the same URL being fetched twice if it appears in both
-  // the anchor link list and the sitemap (common for top-level pages).
-  const htmlFetchPromiseCache = new Map<string, Promise<string>>();
+  if (homepageProbe.protected) {
+    console.log("[crawl] homepage probe blocked, switching directly to Cloudflare", {
+      baseUrl,
+      vendor: homepageProbe.vendor,
+    });
 
-  function fetchHtmlOnce(url: string): Promise<string> {
-    if (!htmlFetchPromiseCache.has(url)) {
-      htmlFetchPromiseCache.set(url, fetchHTML(url, signal));
-    }
-    return htmlFetchPromiseCache.get(url)!;
+    const cloudflareResult = await fetchCloudflareCrawlResult(baseUrl, signal);
+    return {
+      pages: cloudflareResult.pages.slice(0, MAX_PAGES),
+      errors: cloudflareResult.errors,
+    };
   }
 
-  // Step 1 — fetch homepage HTML.
-  // If axios is blocked (403/401/429) or the page looks like a JS shell,
-  // fall back to Playwright before giving up. This handles sites behind
-  // Cloudflare JS challenges and other bot-detection layers.
-  let homepageHtml: string;
-  let wasJSSite = false;
-
-  try {
-    homepageHtml = await fetchHtmlOnce(baseUrl);
-  } catch (err) {
-    const classified = classifyError(err);
-    // Blocked by WAF/CDN — try Playwright as a last resort
-    if (classified.type === "blocked") {
-      const rendered = await renderWithTimeout(baseUrl);
-      if (rendered) {
-        homepageHtml = rendered;
-        wasJSSite = true; // treat sub-pages the same way
-      } else {
-        errors.push({ url: baseUrl, ...classified });
-        return { pages, errors };
-      }
-    } else {
+  const homepageArtifact = await fetchHomepageArtifact(baseUrl, signal).catch(
+    async (err) => {
+      const classified = classifyError(err);
       errors.push({ url: baseUrl, ...classified });
-      return { pages, errors };
-    }
+      return null;
+    },
+  );
+
+  if (!homepageArtifact) {
+    return { pages, errors };
   }
 
-  // Step 2 — JS-site detection: if axios succeeded, check if the page is a
-  // JS shell (empty body) and attempt Playwright render.
-  // wasJSSite is captured BEFORE Playwright re-renders — after rendering
-  // isJSSite flips false, so we must remember the original value to drive
-  // the sub-page strategy below.
-  if (!wasJSSite) {
-    const quickParse = parseHTML(homepageHtml, baseUrl);
-    wasJSSite = quickParse.isJSSite;
-    if (wasJSSite) {
-      const rendered = await renderWithTimeout(baseUrl);
-      if (rendered) homepageHtml = rendered;
-    }
+  const homepageCanonical = canonicalizeUrl(homepageArtifact.page.url);
+  if (!pageUrlSet.has(homepageCanonical)) {
+    pages.push(homepageArtifact.page);
+    pageUrlSet.add(homepageCanonical);
   }
 
-  pages.push(parseHTML(homepageHtml, baseUrl));
-
-  // Step 3 — discover same-domain links + sitemap in parallel
-  const [sameDomainLinks, sitemapLinks] = await Promise.all([
-    Promise.resolve(extractSameDomainLinks(homepageHtml, baseUrl)),
-    fetchSitemapUrls(baseUrl),
+  const [homepageLinks, sitemapLinks] = await Promise.all([
+    Promise.resolve(extractSameDomainLinks(homepageArtifact.html, baseUrl)),
+    discoverSitemapUrls(baseUrl),
   ]);
 
-  const { origin, hostname: baseHostname } = new URL(baseUrl);
-  const homepageHref = `${origin}/`;
-  // Filter sitemap entries to same domain (sitemaps can reference CDN paths)
-  const baseHost = new URL(baseUrl).hostname.replace(/^www\./, "");
-  const filteredSitemapLinks = sitemapLinks.filter((u) => {
-    try {
-      const h = new URL(u).hostname.replace(/^www\./, "");
-      return h === baseHost || h.endsWith(`.${baseHost}`);
-    } catch {
-      return false;
-    }
-  });
-
-  // Priority match via partial path inclusion
-  const prioritized = PRIORITY_PATHS.flatMap((path) =>
-    sameDomainLinks.filter((link) => {
-      try {
-        return new URL(link).pathname.includes(path);
-      } catch {
-        return false;
-      }
-    }),
+  const candidates = mergeCandidateLists(baseUrl, homepageLinks, sitemapLinks);
+  const { coreUrls, fillUrls } = buildPlannedUrlOrder(
+    candidates,
+    baseUrl,
+    homepageArtifact.page.isJSSite,
   );
 
-  // Score remaining anchor links by content value rather than URL length
-  const remaining = sameDomainLinks
-    .filter((l) => !prioritized.includes(l) && l !== homepageHref)
-    .sort((a, b) => scoreLink(b) - scoreLink(a));
-
-  // Merge anchor links + sitemap; deduplicate
-  const allCandidates = [
-    ...new Set([...prioritized, ...remaining, ...filteredSitemapLinks]),
-  ];
-
-  // For JS SPAs, same-origin sub-paths are client-side routes — the server
-  // returns 404 for them even in a real browser. Only subdomain pages
-  // (e.g. blog.pfscores.com) are separate server deployments worth crawling.
-  const urlsToFetch = wasJSSite
-    ? allCandidates.filter((u) => {
-        try {
-          return new URL(u).hostname !== baseHostname;
-        } catch {
-          return false;
-        }
-      })
-    : allCandidates;
-
-  const cappedUrls = urlsToFetch.slice(0, MAX_PAGES - 1);
-
-  // Step 4 — crawl sub-pages with bounded concurrency.
-  // For JS sites: first try plain axios; only launch Playwright if the page
-  // still looks like a JS shell after the axios fetch. This avoids an
-  // expensive browser launch for every sub-page.
-  const subPageConcurrency = wasJSSite ? 1 : CONCURRENCY;
-
-  const settled = await withConcurrency(
-    cappedUrls.map((url) => async (): Promise<PageData> => {
-      const html = await fetchHtmlOnce(url);
-
-      if (wasJSSite) {
-        const parsed = parseHTML(html, url);
-        if (parsed.isJSSite) {
-          const rendered = await renderWithTimeout(url);
-          return parseHTML(rendered ?? html, url);
-        }
-        return parsed;
-      }
-
-      return parseHTML(html, url);
-    }),
-    subPageConcurrency,
-  );
-
-  settled.forEach((result, i) => {
-    if (result.status === "fulfilled") {
-      pages.push(result.value);
-    } else {
-      const { type, message } = classifyError(result.reason);
-      errors.push({ url: cappedUrls[i], type, message });
-    }
+  console.log("[crawl] candidate discovery summary", {
+    homepageLinks: homepageLinks.length,
+    sitemapLinks: sitemapLinks.length,
+    mergedCandidates: candidates.length,
+    coreUrls,
   });
 
-  return { pages, errors };
+  const probeCache = new Map<string, Promise<ProtectionProbeResult>>();
+  const artifactCache = new Map<string, Promise<PageArtifact>>();
+  const artifacts = new Map<string, PageArtifact>();
+  const cloudflareSeededCanonicalUrls = new Set<string>();
+
+  function probeUrl(url: string): Promise<ProtectionProbeResult> {
+    const canonical = canonicalizeUrl(url);
+    if (!probeCache.has(canonical)) {
+      probeCache.set(canonical, probeProtection(url, signal));
+    }
+    return probeCache.get(canonical)!;
+  }
+
+  async function fetchSelectedArtifact(url: string): Promise<PageArtifact> {
+    const canonical = canonicalizeUrl(url);
+    if (!artifactCache.has(canonical)) {
+      artifactCache.set(
+        canonical,
+        (async () => {
+          try {
+            const artifact = await fetchLocalArtifact(url, signal);
+            artifacts.set(canonical, artifact);
+            return artifact;
+          } catch (err) {
+            throw err;
+          }
+        })(),
+      );
+    }
+
+    return artifactCache.get(canonical)!;
+  }
+
+  async function fetchUrlBatch(urls: string[]): Promise<void> {
+    if (urls.length === 0) return;
+
+    const uniqueUrls = dedupeUrls(urls).filter((url) => {
+      const canonical = canonicalizeUrl(url);
+      return !artifacts.has(canonical) && !failedUrlSet.has(canonical);
+    });
+    if (uniqueUrls.length === 0) return;
+
+    const probeResults = await withConcurrency(
+      uniqueUrls.map((url) => async () => ({
+        url,
+        probe: await probeUrl(url),
+      })),
+      PROBE_CONCURRENCY,
+    );
+
+    const protectedUrls: string[] = [];
+    const unprotectedUrls: string[] = [];
+
+    probeResults.forEach((result, index) => {
+      const url = uniqueUrls[index];
+      if (result.status === "fulfilled" && result.value.probe.protected) {
+        protectedUrls.push(url);
+      } else {
+        unprotectedUrls.push(url);
+      }
+    });
+
+    if (protectedUrls.length > 0) {
+      const protectedSeedUrl = protectedUrls[0];
+      usedCloudflareSeedCrawl = true;
+      protectedUrls.forEach((url) =>
+        cloudflareSeededCanonicalUrls.add(canonicalizeUrl(url)),
+      );
+      console.log(
+        "[crawl] protected shortlist detected, using Cloudflare content batch",
+        {
+          startUrl: baseUrl,
+          protectedSeedUrl,
+          protectedCandidates: protectedUrls.length,
+        },
+      );
+
+      const cloudflareResult = await fetchCloudflareCrawlResult(baseUrl, signal);
+
+      for (const page of cloudflareResult.pages) {
+        const canonical = canonicalizeUrl(page.url);
+        if (pageUrlSet.has(canonical)) continue;
+        pages.push(page);
+        pageUrlSet.add(canonical);
+      }
+
+      errors.push(...cloudflareResult.errors);
+    }
+
+    const runFetches = async (
+      batchUrls: string[],
+      concurrency: number,
+    ): Promise<
+      Array<
+        | { url: string; artifact: PageArtifact }
+        | { url: string; error: unknown }
+      >
+    > => {
+      const settled = await withConcurrency(
+        batchUrls.map((url) => async () => {
+          const artifact = await fetchSelectedArtifact(url);
+          return { url, artifact };
+        }),
+        concurrency,
+      );
+
+      return settled.map((result, index) =>
+        result.status === "fulfilled"
+          ? result.value
+          : { url: batchUrls[index], error: result.reason },
+      );
+    };
+
+    const results = await runFetches(unprotectedUrls, FETCH_CONCURRENCY);
+
+    for (const result of results) {
+      if ("artifact" in result) {
+        const canonical = canonicalizeUrl(result.artifact.page.url);
+        if (!pageUrlSet.has(canonical)) {
+          pages.push(result.artifact.page);
+          pageUrlSet.add(canonical);
+        }
+        continue;
+      }
+
+      failedUrlSet.add(canonicalizeUrl(result.url));
+      logCrawlFailure(result.url, "page-fetch", result.error);
+      const { type, message } = classifyError(result.error);
+      errors.push({ url: result.url, type, message });
+    }
+  }
+
+  const reservedFollowupSlots = 4;
+  const initialBudget = Math.max(
+    0,
+    MAX_PAGES - pages.length - reservedFollowupSlots,
+  );
+  const initialUrls = dedupeUrls([...coreUrls, ...fillUrls]).slice(
+    0,
+    initialBudget,
+  );
+  console.log("[crawl] initial page plan", {
+    count: initialUrls.length,
+    urls: initialUrls,
+  });
+
+  await fetchUrlBatch(initialUrls);
+
+  const crawledUrlSet = new Set([...pageUrlSet]);
+  const remainingCapacity = () => Math.max(0, MAX_PAGES - pages.length);
+
+  const servicesPage = pages.find((page) =>
+    matchesPageType(
+      { url: page.url, anchorText: page.title.toLowerCase() },
+      "services",
+    ),
+  );
+
+  if (!usedCloudflareSeedCrawl && servicesPage && remainingCapacity() > 0) {
+    const serviceArtifact = artifacts.get(canonicalizeUrl(servicesPage.url));
+    if (serviceArtifact) {
+      const serviceUrls = extractSameDomainLinks(
+        serviceArtifact.html,
+        servicesPage.url,
+      )
+        .filter((candidate) =>
+          isDirectChildPage(servicesPage.url, candidate.url),
+        )
+        .sort((a, b) => rankCandidate(b) - rankCandidate(a))
+        .map((candidate) => candidate.url)
+        .filter((url) => !crawledUrlSet.has(canonicalizeUrl(url)))
+        .filter((url) => !failedUrlSet.has(canonicalizeUrl(url)))
+        .slice(0, Math.min(3, remainingCapacity()));
+
+      if (serviceUrls.length > 0) {
+        console.log("[crawl] services child plan", { urls: serviceUrls });
+        await fetchUrlBatch(serviceUrls);
+        pages.forEach((page) => crawledUrlSet.add(canonicalizeUrl(page.url)));
+      }
+    }
+  }
+
+  const blogListingPage = pages.find((page) =>
+    matchesPageType(
+      { url: page.url, anchorText: page.title.toLowerCase() },
+      "blog",
+    ),
+  );
+
+  if (!usedCloudflareSeedCrawl && blogListingPage && remainingCapacity() > 0) {
+    const blogArtifact = artifacts.get(canonicalizeUrl(blogListingPage.url));
+    if (blogArtifact) {
+      const blogPostUrl = extractSameDomainLinks(
+        blogArtifact.html,
+        blogListingPage.url,
+      )
+        .filter(
+          (candidate) => !crawledUrlSet.has(canonicalizeUrl(candidate.url)),
+        )
+        .filter(
+          (candidate) => !failedUrlSet.has(canonicalizeUrl(candidate.url)),
+        )
+        .find((candidate) =>
+          isLikelyBlogPost(blogListingPage.url, candidate),
+        )?.url;
+
+      if (blogPostUrl) {
+        console.log("[crawl] blog sample plan", { url: blogPostUrl });
+        await fetchUrlBatch([blogPostUrl]);
+      }
+    }
+  }
+
+  if (pages.length < MAX_PAGES) {
+    const extraUrls = fillUrls
+      .filter((url) => !pageUrlSet.has(canonicalizeUrl(url)))
+      .filter((url) => !failedUrlSet.has(canonicalizeUrl(url)))
+      .filter((url) => !cloudflareSeededCanonicalUrls.has(canonicalizeUrl(url)))
+      .slice(0, MAX_PAGES - pages.length);
+
+    if (usedCloudflareSeedCrawl) {
+      console.log("[crawl] skipping fill plan after Cloudflare seed crawl", {
+        pagesCrawled: pages.length,
+      });
+    } else if (extraUrls.length > 0) {
+      console.log("[crawl] fill plan", { count: extraUrls.length });
+      await fetchUrlBatch(extraUrls);
+    }
+  }
+
+  console.log("[crawl] completed", {
+    baseUrl,
+    pagesCrawled: pages.length,
+    errors: errors.length,
+  });
+
+  return {
+    pages: pages.slice(0, MAX_PAGES),
+    errors,
+  };
 }

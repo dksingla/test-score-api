@@ -6,9 +6,6 @@ import { buildDebugPayload } from "../utils/claude";
 
 import type { ApiRequest, ApiResponse } from "../utils/types";
 
-// Local crawl + Cloudflare fallback (protected sites).
-const CRAWL_TIMEOUT_MS = 110_000;
-
 function sendError(res: ApiResponse, status: number, message: string): void {
   res.status(status).json({ success: false, error: message });
 }
@@ -37,7 +34,6 @@ export default async function handler(
   }
 
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), CRAWL_TIMEOUT_MS);
 
   try {
     // Debug endpoint should not slice HTML. Enable unlimited fetch mode for this request.
@@ -48,6 +44,7 @@ export default async function handler(
     const pageSpeedPromise = fetchPageSpeed(url).catch(() => ({
       pageSpeedScore: null,
       mobileFriendly: null,
+      error: "PageSpeed request failed",
     }));
 
     // ── STEP 1: Crawl + Robots in parallel ────────────────────────────────────
@@ -100,9 +97,17 @@ export default async function handler(
         outboundLinks: p.outboundLinks,
         isJSSite: p.isJSSite,
         ga4Id: p.ga4Id,
-        businessName: p.businessName,
+        gtmId: p.gtmId,
         hasForm: p.hasForm,
         ctaTexts: p.ctaTexts,
+        wordCount: p.wordCount,
+        unorderedListCount: p.unorderedListCount,
+        orderedListCount: p.orderedListCount,
+        tableCount: p.tableCount,
+        blockquoteCount: p.blockquoteCount,
+        socialProfiles: p.socialProfiles,
+        schemaSignals: p.schemaSignals,
+        dateModified: p.dateModified,
       })),
 
       // ── Layer 1 technical signals ──────────────────────────────────────────
@@ -116,6 +121,7 @@ export default async function handler(
         aboutUrl: debugPayload.selectedPages.about?.url ?? null,
         servicesUrl: debugPayload.selectedPages.services?.url ?? null,
         blogUrls: debugPayload.selectedPages.blog.map((p) => p.url),
+        proofUrls: debugPayload.selectedPages.proof.map((p) => p.url),
       },
 
       // ── Claude AI input — trimmed payload sent to prompt ──────────────────
@@ -132,6 +138,5 @@ export default async function handler(
     return sendError(res, 500, message);
   } finally {
     delete process.env.CRAWLER_DEBUG_NO_LIMIT;
-    clearTimeout(timer);
   }
 }
