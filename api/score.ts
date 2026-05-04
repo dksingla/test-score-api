@@ -14,7 +14,16 @@ import {
 import type { ApiRequest, ApiResponse } from "../utils/types";
 import type { ClaudeResponse } from "../utils/claude";
 import type { Layer1Signals } from "../utils/layer1";
-const CLAUDE_TIMEOUT_MS = 45_000;
+
+function readTimeoutMs(envValue: string | undefined, fallback: number): number {
+  const parsed = Number(envValue);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+const CLAUDE_TIMEOUT_MS = readTimeoutMs(
+  process.env.CLAUDE_HANDLER_TIMEOUT_MS,
+  120_000,
+);
 
 interface ErrorBody {
   success: false;

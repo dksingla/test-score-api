@@ -62,7 +62,15 @@ const CRAWL_HEADERS = {
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
 };
 
-const PAGESPEED_TIMEOUT_MS = 45_000;
+function readTimeoutMs(envValue: string | undefined, fallback: number): number {
+  const parsed = Number(envValue);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+const PAGESPEED_TIMEOUT_MS = readTimeoutMs(
+  process.env.PAGESPEED_TIMEOUT_MS,
+  90_000,
+);
 const PAGESPEED_MAX_ATTEMPTS = 2;
 const SITEMAP_TIMEOUT_MS = 10_000;
 const MAX_SITEMAP_FILES = 8;
