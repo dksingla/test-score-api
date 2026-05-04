@@ -1,5 +1,5 @@
 import "dotenv/config";
-import express, { json } from "express";
+import express from "express";
 import handler from "./api/score";
 import handlerCrawl from "./api/crawl";
 import handlerDebug from "./api/debug";

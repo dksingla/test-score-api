@@ -31,6 +31,7 @@ export interface Layer1Signals {
   };
   conversion: {
     totalForms: number;
+    totalFormsWithEmail: number;
     totalCTAs: number;
     hasLeadMagnetSignals: boolean;
   };
@@ -523,6 +524,7 @@ export function extractTechnicalSignals(pages: PageData[], robots: RobotsMeta) {
 
   // ── Conversion ───────────────────────────────────────────────────────────
   const totalForms = pages.filter((p) => p.hasForm).length;
+  const totalFormsWithEmail = pages.filter((p) => p.hasEmailForm).length;
   const totalCTAs = pages.reduce((sum, p) => sum + p.ctaTexts.length, 0);
   const hasLeadMagnetSignals =
     totalForms > 0 &&
@@ -536,7 +538,12 @@ export function extractTechnicalSignals(pages: PageData[], robots: RobotsMeta) {
     },
     technical,
     content: { blogPages, pagesWithDateModified },
-    conversion: { totalForms, totalCTAs, hasLeadMagnetSignals },
+    conversion: {
+      totalForms,
+      totalFormsWithEmail,
+      totalCTAs,
+      hasLeadMagnetSignals,
+    },
   };
 }
 

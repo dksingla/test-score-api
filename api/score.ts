@@ -6,11 +6,15 @@ import { getClaudeScores } from "../utils/claude";
 import { calculateScore } from "../utils/scoring";
 import { collectLayer1Signals, fetchPageSpeed } from "../utils/layer1";
 import { ratelimit } from "../utils/rateLimiter";
+import {
+  buildScorecardWebhookPayload,
+  sendScorecardWebhook,
+} from "../utils/webhook";
 
 import type { ApiRequest, ApiResponse } from "../utils/types";
 import type { ClaudeResponse } from "../utils/claude";
 import type { Layer1Signals } from "../utils/layer1";
-const CLAUDE_TIMEOUT_MS = 20_000;
+const CLAUDE_TIMEOUT_MS = 45_000;
 
 interface ErrorBody {
   success: false;
@@ -75,8 +79,23 @@ export default async function handler(
 
   const body = req.body as Record<string, unknown>;
   const rawUrl = body?.url;
-  const name = body?.name as string | undefined;
-  const email = body?.email as string | undefined;
+  const rawName = body?.name;
+  const rawEmail = body?.email;
+
+  if (typeof rawName !== "string" || !rawName.trim()) {
+    return sendError(res, 400, "Name is required");
+  }
+
+  if (typeof rawEmail !== "string" || !rawEmail.trim()) {
+    return sendError(res, 400, "Email is required");
+  }
+
+  const name = rawName.trim();
+  const email = rawEmail.trim();
+  const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  if (!emailPattern.test(email)) {
+    return sendError(res, 400, "Invalid email");
+  }
 
   if (typeof rawUrl !== "string" || !rawUrl.trim()) {
     return sendError(res, 400, "URL is required");
@@ -136,10 +155,32 @@ export default async function handler(
       pageSpeedPromise,
     ).catch((): Layer1Signals | undefined => undefined);
 
+    const claudeLayer1ContextPromise = Promise.all([
+      pageSpeedPromise,
+      Promise.resolve(
+        crawlResult.pages.filter((page) => page.hasEmailForm).length,
+      ),
+    ]).then(([performance, formsWithEmail]) => ({
+      performance,
+      conversion: {
+        totalForms: crawlResult.pages.filter((page) => page.hasForm).length,
+        totalFormsWithEmail: formsWithEmail,
+        totalCTAs: crawlResult.pages.reduce(
+          (sum, page) => sum + page.ctaTexts.length,
+          0,
+        ),
+        hasLeadMagnetSignals: crawlResult.pages.some((page) =>
+          page.ctaTexts.some((cta) => /free|download|guide|ebook|trial|demo/i.test(cta)),
+        ),
+      },
+    }));
+
     let aiScores: ClaudeResponse;
     try {
       aiScores = await Promise.race([
-        getClaudeScores(crawlResult.pages),
+        claudeLayer1ContextPromise.then((context) =>
+          getClaudeScores(crawlResult.pages, context),
+        ),
         new Promise<never>((_, reject) =>
           setTimeout(
             () => reject(new Error("Claude timeout")),
@@ -149,11 +190,16 @@ export default async function handler(
       ]);
     } catch (err) {
       console.error("Claude error:", err);
-      return sendError(
-        res,
-        503,
-        "AI analysis temporarily unavailable. Please try again.",
-      );
+      res.status(200).json({
+        error: "scoring_failed",
+        message: "Unable to complete AI analysis. Please try again.",
+      });
+      return;
+    }
+
+    if ("error" in aiScores) {
+      res.status(200).json(aiScores);
+      return;
     }
 
     // layer1 should already be resolved; await is effectively instant
@@ -175,28 +221,27 @@ export default async function handler(
     // ─────────────────────────────────────────────
     if (process.env.GHL_WEBHOOK_URL) {
       console.log("[score] sending webhook →", process.env.GHL_WEBHOOK_URL);
-      axios
-        .post(process.env.GHL_WEBHOOK_URL, {
-          event: "scorecard_completed",
-          contact: {
-            name: name || "",
-            email: email || "",
-            website: url,
-          },
-          score: final.score,
-          tier: final.tier,
-          pillars: final.pillars,
-          answers: final.answers,
-          completedAt: new Date().toISOString(),
-        })
-        .catch((err) => {
-          const status = err?.response?.status as number | undefined;
-          console.error(
-            "[score] webhook failed:",
-            status ? `HTTP ${status}` : "",
-            err?.message,
-          );
-        });
+      const webhookPayload = buildScorecardWebhookPayload({
+        name,
+        email,
+        website: url,
+        score: final.score,
+        tier: final.tier,
+        pillars: {
+          foundation: final.pillars.foundation ?? 0,
+          intent: final.pillars.intent ?? 0,
+          relevance: final.pillars.relevance ?? 0,
+          expertise: final.pillars.expertise ?? 0,
+          unify: final.pillars.unify ?? 0,
+          performance: final.pillars.performance ?? 0,
+        },
+        answers: final.answers,
+        priorityFixes: final.priorityFixes,
+      });
+
+      sendScorecardWebhook(webhookPayload).catch((err) => {
+        console.error("[score] webhook sender crashed:", err);
+      });
     } else {
       console.log("[score] webhook skipped (GHL_WEBHOOK_URL not set)");
     }
@@ -213,6 +258,7 @@ export default async function handler(
       confidence: final.confidence,
       pillars: final.pillars,
       scores: final.scores, // includes q2/q3 from Layer 1
+      priority_fixes: final.priorityFixes,
     });
     return;
   } catch (err) {

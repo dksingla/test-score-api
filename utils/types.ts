@@ -22,6 +22,7 @@ export interface PageData {
   metaDescription: string;
   h1Tags: string[];
   h2Tags: string[];
+  h3Tags: string[];
   bodyText: string;
   schemas: string[];
   outboundLinks: string[];
@@ -31,6 +32,7 @@ export interface PageData {
   gtmId: string | null;
   businessName: string;
   hasForm: boolean;
+  hasEmailForm: boolean;
   ctaTexts: string[];
   wordCount: number;
   unorderedListCount: number;

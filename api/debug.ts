@@ -91,6 +91,7 @@ export default async function handler(
         metaDescription: p.metaDescription,
         h1Tags: p.h1Tags,
         h2Tags: p.h2Tags,
+        h3Tags: p.h3Tags,
         bodyText: p.bodyText,
         bodyTextLength: p.bodyText.length,
         schemas: p.schemas,
@@ -99,6 +100,7 @@ export default async function handler(
         ga4Id: p.ga4Id,
         gtmId: p.gtmId,
         hasForm: p.hasForm,
+        hasEmailForm: p.hasEmailForm,
         ctaTexts: p.ctaTexts,
         wordCount: p.wordCount,
         unorderedListCount: p.unorderedListCount,
@@ -116,12 +118,14 @@ export default async function handler(
       // ── Claude AI input — page selection ──────────────────────────────────
       // Shows exactly which pages were picked for each intent bucket
       aiPageSelection: {
-        isThinSite: debugPayload.isThinSite,
         homepageUrl: debugPayload.selectedPages.homepage?.url ?? null,
         aboutUrl: debugPayload.selectedPages.about?.url ?? null,
         servicesUrl: debugPayload.selectedPages.services?.url ?? null,
-        blogUrls: debugPayload.selectedPages.blog.map((p) => p.url),
-        proofUrls: debugPayload.selectedPages.proof.map((p) => p.url),
+        contactUrl: debugPayload.selectedPages.contact?.url ?? null,
+        blogSampleUrl: debugPayload.selectedPages.blogSample?.url ?? null,
+        caseStudiesUrl: debugPayload.selectedPages.caseStudies?.url ?? null,
+        testimonialsUrl: debugPayload.selectedPages.testimonials?.url ?? null,
+        faqUrl: debugPayload.selectedPages.faq?.url ?? null,
       },
 
       // ── Claude AI input — trimmed payload sent to prompt ──────────────────

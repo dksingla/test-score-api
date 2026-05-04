@@ -259,7 +259,7 @@ export function parseHTML(
   const metaDescription =
     $('meta[name="description"]').attr("content")?.trim() ?? "";
 
-  // ── 3. Heading structure (H1 + H2) ────────────────────────────────────────
+  // ── 3. Heading structure (H1 + H2 + H3) ───────────────────────────────────
   const h1Tags: string[] = [];
   $("h1").each((_, el) => {
     h1Tags.push($(el).text().trim());
@@ -268,6 +268,11 @@ export function parseHTML(
   const h2Tags: string[] = [];
   $("h2").each((_, el) => {
     h2Tags.push($(el).text().trim());
+  });
+
+  const h3Tags: string[] = [];
+  $("h3").each((_, el) => {
+    h3Tags.push($(el).text().trim());
   });
 
   // ── 5. Schema markup — extracted BEFORE scripts are removed ─────────────
@@ -342,7 +347,18 @@ export function parseHTML(
     "";
 
   // ── CTA + form signals ────────────────────────────────────────────────────
-  const hasForm = $("form").length > 0;
+  const forms = $("form");
+  const hasForm = forms.length > 0;
+  let hasEmailForm = false;
+
+  forms.each((_, el) => {
+    const form = $(el);
+    if (
+      form.find('input[type="email"], input[name*="email" i], input[id*="email" i]').length > 0
+    ) {
+      hasEmailForm = true;
+    }
+  });
 
   const ctaTexts: string[] = [];
   $("a, button").each((_, el) => {
@@ -375,6 +391,7 @@ export function parseHTML(
     metaDescription,
     h1Tags,
     h2Tags,
+    h3Tags,
     bodyText,
     schemas,
     outboundLinks,
@@ -383,6 +400,7 @@ export function parseHTML(
     gtmId,
     businessName,
     hasForm,
+    hasEmailForm,
     ctaTexts: [...new Set(ctaTexts)],
     wordCount,
     unorderedListCount: $("ul").length,
