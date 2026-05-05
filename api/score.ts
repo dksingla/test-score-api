@@ -142,8 +142,6 @@ export default async function handler(
         score: 0,
         tier: "Hidden",
         business_name: "",
-        business_description: "",
-        confidence: "low",
         pillars: {},
         scores: {},
         error: "Unable to crawl site",
@@ -221,7 +219,6 @@ export default async function handler(
       aiScores,
       crawlResult.pages,
       robots,
-      crawlResult.errors.length,
       layer1,
     );
 
@@ -263,8 +260,6 @@ export default async function handler(
       tier: final.tier,
       // explanation: getScoreExplanation(final.score),
       business_name: final.businessName,
-      business_description: final.businessDescription,
-      confidence: final.confidence,
       pillars: final.pillars,
       scores: final.scores, // includes q2/q3 from Layer 1
       priority_fixes: final.priorityFixes,

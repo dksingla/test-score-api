@@ -60,6 +60,50 @@ export interface PriorityFix {
   fix: string;
 }
 
+const QUESTION_TO_PILLAR: Record<string, string> = {
+  q1: "intent",
+  q2: "foundation",
+  q3: "foundation",
+  q4: "relevance",
+  q5: "relevance",
+  q6: "relevance",
+  q7: "expertise",
+  q8: "expertise",
+  q9: "expertise",
+  q11: "unify",
+  q13: "intent",
+  q14: "performance",
+  q15: "performance",
+  q16: "expertise",
+  q17: "unify",
+  q18: "performance",
+};
+
+const PILLAR_ALIASES: Record<string, string> = {
+  foundation: "foundation",
+  intent: "intent",
+  relevance: "relevance",
+  expertise: "expertise",
+  unify: "unify",
+  performance: "performance",
+  content: "relevance",
+  credibility: "expertise",
+  social_proof: "expertise",
+  conversion: "intent",
+};
+
+function normalizePriorityFix(fix: PriorityFix): PriorityFix {
+  const canonicalPillar =
+    QUESTION_TO_PILLAR[fix.question_ref] ??
+    PILLAR_ALIASES[fix.pillar.trim().toLowerCase()] ??
+    fix.pillar.trim().toLowerCase();
+
+  return {
+    ...fix,
+    pillar: canonicalPillar,
+  };
+}
+
 export interface ClaudeSuccessResponse {
   business_name: string;
   scores: Record<ClaudeQuestionId, ClaudeScore>;
@@ -453,7 +497,9 @@ function validateClaudeResponse(parsed: unknown): ClaudeSuccessResponse {
     throw new Error("Missing priority_fixes");
   }
 
-  const priorityFixes = obj.priority_fixes.filter(isValidPriorityFix);
+  const priorityFixes = obj.priority_fixes
+    .filter(isValidPriorityFix)
+    .map(normalizePriorityFix);
   if (priorityFixes.length !== obj.priority_fixes.length) {
     throw new Error("Invalid priority_fixes entries");
   }

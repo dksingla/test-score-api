@@ -15,8 +15,6 @@ interface FinalScore {
   answers: Record<string, number>;
   scores: Record<string, ClaudeScore>;
   businessName: string;
-  businessDescription: string;
-  confidence: "high" | "medium" | "low";
   priorityFixes: PriorityFix[];
 }
 
@@ -243,35 +241,6 @@ function getTier(score: number): string {
   return "AI-Optimized";
 }
 
-function calcConfidence(
-  pages: PageData[],
-  robots: RobotsMeta,
-  errorCount: number,
-): "high" | "medium" | "low" {
-  let points = 0;
-
-  if (pages.length >= 5) points += 3;
-  else if (pages.length >= 3) points += 2;
-  else points += 1;
-
-  if (errorCount >= 3) points -= 2;
-  else if (errorCount >= 1) points -= 1;
-
-  if (pages[0]?.isJSSite) points -= 1;
-
-  if (
-    robots.gptBotAllowed === false ||
-    robots.claudeBotAllowed === false ||
-    robots.perplexityBotAllowed === false
-  ) {
-    points -= 1;
-  }
-
-  if (points >= 3) return "high";
-  if (points >= 2) return "medium";
-  return "low";
-}
-
 function isClaudeFailure(response: ClaudeResponse): response is ClaudeFailureResponse {
   return "error" in response;
 }
@@ -284,7 +253,6 @@ export function calculateScore(
   aiResponse: ClaudeResponse,
   pages: PageData[],
   robots: RobotsMeta,
-  errorCount: number = 0,
   layer1?: Layer1Signals,
 ): FinalScore {
   if (!isClaudeSuccess(aiResponse)) {
@@ -317,25 +285,13 @@ export function calculateScore(
   for (const [question, result] of Object.entries(allScores)) {
     answers[question] = result.score;
   }
-
-  const homepage = resolveHomepage(pages);
-  const rawBody = homepage?.bodyText ?? "";
-  const meaningfulSnippet =
-    rawBody
-      .split(/[.?!]/)
-      .find((sentence) => sentence.trim().length > 40)
-      ?.trim() ?? "";
-
   return {
     score,
     tier: getTier(score),
     pillars,
     answers,
     scores: allScores,
-    businessName: aiResponse.business_name || homepage?.businessName || "",
-    businessDescription:
-      homepage?.metaDescription || meaningfulSnippet || rawBody.slice(0, 200),
-    confidence: calcConfidence(pages, robots, errorCount),
+    businessName: aiResponse.business_name || resolveHomepage(pages)?.businessName || "",
     priorityFixes: aiResponse.priority_fixes,
   };
 }

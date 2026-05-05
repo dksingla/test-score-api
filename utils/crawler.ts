@@ -402,6 +402,26 @@ function isDirectChildPage(parentUrl: string, candidateUrl: string): boolean {
   }
 }
 
+function isNestedChildPage(parentUrl: string, candidateUrl: string): boolean {
+  try {
+    const parent = new URL(parentUrl);
+    const child = new URL(candidateUrl);
+    if (parent.hostname !== child.hostname) return false;
+
+    const parentPath = parent.pathname.replace(/\/$/, "");
+    const childPath = child.pathname.replace(/\/$/, "");
+    if (!parentPath || childPath === parentPath) return false;
+
+    return childPath.startsWith(`${parentPath}/`);
+  } catch {
+    return false;
+  }
+}
+
+function isIndexLikeContentPath(path: string): boolean {
+  return /\/(?:tag|category|author|page\/\d+|feed)(?:\/|$)/i.test(path);
+}
+
 function isLikelyBlogPost(
   listingUrl: string,
   candidate: LinkCandidate,
@@ -411,7 +431,7 @@ function isLikelyBlogPost(
     const path = new URL(candidate.url).pathname.replace(/\/$/, "");
     if (path === listingPath) return false;
     if (candidate.isNav) return false;
-    if (/tag|category|author|page\/\d+/i.test(path)) return false;
+    if (isIndexLikeContentPath(path)) return false;
 
     if (
       path.startsWith(`${listingPath}/`) ||
@@ -427,6 +447,120 @@ function isLikelyBlogPost(
   } catch {
     return false;
   }
+}
+
+function isLikelyCaseStudyDetail(
+  listingUrl: string,
+  candidate: LinkCandidate,
+): boolean {
+  try {
+    const listingPath = new URL(listingUrl).pathname.replace(/\/$/, "");
+    const path = new URL(candidate.url).pathname.replace(/\/$/, "");
+    if (path === listingPath) return false;
+    if (candidate.isNav) return false;
+    if (isIndexLikeContentPath(path)) return false;
+
+    if (path.startsWith(`${listingPath}/`)) {
+      return true;
+    }
+
+    return (
+      /\b(case study|case studies|success story|success stories|client result|results)\b/i.test(
+        candidate.anchorText,
+      ) ||
+      /\/(?:case-studies|case-study|success-stories|success-story|results)(?:\/|$)/i.test(
+        path,
+      )
+    );
+  } catch {
+    return false;
+  }
+}
+
+function rankBlogDetailCandidate(
+  listingUrl: string,
+  candidate: LinkCandidate,
+): number {
+  let score = rankCandidate(candidate);
+
+  try {
+    const path = new URL(candidate.url).pathname.replace(/\/$/, "");
+    if (isNestedChildPage(listingUrl, candidate.url)) score += 120;
+    if (isDirectChildPage(listingUrl, candidate.url)) score += 40;
+    if (
+      /\/(20\d{2}|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec|post|posts|article|articles)\b/i.test(
+        path,
+      )
+    ) {
+      score += 50;
+    }
+    if (candidate.url.includes("?")) score -= 20;
+  } catch {
+    return score;
+  }
+
+  return score;
+}
+
+function rankCaseStudyDetailCandidate(
+  listingUrl: string,
+  candidate: LinkCandidate,
+): number {
+  let score = rankCandidate(candidate);
+
+  try {
+    const path = new URL(candidate.url).pathname.replace(/\/$/, "");
+    if (isNestedChildPage(listingUrl, candidate.url)) score += 120;
+    if (isDirectChildPage(listingUrl, candidate.url)) score += 40;
+    if (
+      /\b(case study|case studies|success story|success stories|client result|results)\b/i.test(
+        candidate.anchorText,
+      )
+    ) {
+      score += 40;
+    }
+    if (/\/(?:case-studies|case-study|success-stories|success-story|results)\//i.test(path)) {
+      score += 50;
+    }
+    if (candidate.url.includes("?")) score -= 20;
+  } catch {
+    return score;
+  }
+
+  return score;
+}
+
+function collectHubDetailUrls(input: {
+  html: string;
+  listingUrl: string;
+  maxCount: number;
+  crawledUrlSet: Set<string>;
+  failedUrlSet: Set<string>;
+  isDetailCandidate: (listingUrl: string, candidate: LinkCandidate) => boolean;
+  rankDetailCandidate: (listingUrl: string, candidate: LinkCandidate) => number;
+}): string[] {
+  const {
+    html,
+    listingUrl,
+    maxCount,
+    crawledUrlSet,
+    failedUrlSet,
+    isDetailCandidate,
+    rankDetailCandidate,
+  } = input;
+
+  return extractSameDomainLinks(html, listingUrl)
+    .filter((candidate) => !crawledUrlSet.has(canonicalizeUrl(candidate.url)))
+    .filter((candidate) => !failedUrlSet.has(canonicalizeUrl(candidate.url)))
+    .filter((candidate) => isDetailCandidate(listingUrl, candidate))
+    .sort(
+      (a, b) =>
+        rankDetailCandidate(listingUrl, b) -
+        rankDetailCandidate(listingUrl, a),
+    )
+    .map((candidate) => candidate.url)
+    .filter((url, index, urls) => urls.indexOf(url) === index)
+    .slice(0, maxCount);
 }
 
 function mergeCandidateLists(
@@ -843,7 +977,7 @@ export async function crawlPages(
     }
   }
 
-  const reservedFollowupSlots = 4;
+  const reservedFollowupSlots = 6;
   const initialBudget = Math.max(
     0,
     MAX_PAGES - pages.length - reservedFollowupSlots,
@@ -861,6 +995,65 @@ export async function crawlPages(
 
   const crawledUrlSet = new Set([...pageUrlSet]);
   const remainingCapacity = () => Math.max(0, MAX_PAGES - pages.length);
+  const syncCrawledUrlSet = () => {
+    pages.forEach((page) => crawledUrlSet.add(canonicalizeUrl(page.url)));
+  };
+
+  const blogListingPage = pages.find((page) =>
+    matchesPageType(
+      { url: page.url, anchorText: page.title.toLowerCase() },
+      "blog",
+    ),
+  );
+
+  if (!usedCloudflareSeedCrawl && blogListingPage && remainingCapacity() > 0) {
+    const blogArtifact = artifacts.get(canonicalizeUrl(blogListingPage.url));
+    if (blogArtifact) {
+      const blogPostUrls = collectHubDetailUrls({
+        html: blogArtifact.html,
+        listingUrl: blogListingPage.url,
+        maxCount: Math.min(3, remainingCapacity()),
+        crawledUrlSet,
+        failedUrlSet,
+        isDetailCandidate: isLikelyBlogPost,
+        rankDetailCandidate: rankBlogDetailCandidate,
+      });
+
+      if (blogPostUrls.length > 0) {
+        console.log("[crawl] blog detail plan", { urls: blogPostUrls });
+        await fetchUrlBatch(blogPostUrls);
+        syncCrawledUrlSet();
+      }
+    }
+  }
+
+  const caseStudiesPage = pages.find((page) =>
+    matchesPageType(
+      { url: page.url, anchorText: page.title.toLowerCase() },
+      "caseStudies",
+    ),
+  );
+
+  if (!usedCloudflareSeedCrawl && caseStudiesPage && remainingCapacity() > 0) {
+    const caseStudiesArtifact = artifacts.get(canonicalizeUrl(caseStudiesPage.url));
+    if (caseStudiesArtifact) {
+      const caseStudyUrls = collectHubDetailUrls({
+        html: caseStudiesArtifact.html,
+        listingUrl: caseStudiesPage.url,
+        maxCount: Math.min(3, remainingCapacity()),
+        crawledUrlSet,
+        failedUrlSet,
+        isDetailCandidate: isLikelyCaseStudyDetail,
+        rankDetailCandidate: rankCaseStudyDetailCandidate,
+      });
+
+      if (caseStudyUrls.length > 0) {
+        console.log("[crawl] case study detail plan", { urls: caseStudyUrls });
+        await fetchUrlBatch(caseStudyUrls);
+        syncCrawledUrlSet();
+      }
+    }
+  }
 
   const servicesPage = pages.find((page) =>
     matchesPageType(
@@ -888,38 +1081,7 @@ export async function crawlPages(
       if (serviceUrls.length > 0) {
         console.log("[crawl] services child plan", { urls: serviceUrls });
         await fetchUrlBatch(serviceUrls);
-        pages.forEach((page) => crawledUrlSet.add(canonicalizeUrl(page.url)));
-      }
-    }
-  }
-
-  const blogListingPage = pages.find((page) =>
-    matchesPageType(
-      { url: page.url, anchorText: page.title.toLowerCase() },
-      "blog",
-    ),
-  );
-
-  if (!usedCloudflareSeedCrawl && blogListingPage && remainingCapacity() > 0) {
-    const blogArtifact = artifacts.get(canonicalizeUrl(blogListingPage.url));
-    if (blogArtifact) {
-      const blogPostUrl = extractSameDomainLinks(
-        blogArtifact.html,
-        blogListingPage.url,
-      )
-        .filter(
-          (candidate) => !crawledUrlSet.has(canonicalizeUrl(candidate.url)),
-        )
-        .filter(
-          (candidate) => !failedUrlSet.has(canonicalizeUrl(candidate.url)),
-        )
-        .find((candidate) =>
-          isLikelyBlogPost(blogListingPage.url, candidate),
-        )?.url;
-
-      if (blogPostUrl) {
-        console.log("[crawl] blog sample plan", { url: blogPostUrl });
-        await fetchUrlBatch([blogPostUrl]);
+        syncCrawledUrlSet();
       }
     }
   }
