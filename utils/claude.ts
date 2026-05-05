@@ -16,7 +16,7 @@ function readTimeoutMs(envValue: string | undefined, fallback: number): number {
 
 const CLAUDE_TIMEOUT_MS = readTimeoutMs(
   process.env.CLAUDE_API_TIMEOUT_MS ?? process.env.CLAUDE_TIMEOUT_MS,
-  120_000,
+  240_000,
 );
 
 const ABOUT_REGEX = /about|about us|our story|team|founder/i;

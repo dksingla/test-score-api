@@ -15,16 +15,6 @@ import type { ApiRequest, ApiResponse } from "../utils/types";
 import type { ClaudeResponse } from "../utils/claude";
 import type { Layer1Signals } from "../utils/layer1";
 
-function readTimeoutMs(envValue: string | undefined, fallback: number): number {
-  const parsed = Number(envValue);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
-}
-
-const CLAUDE_TIMEOUT_MS = readTimeoutMs(
-  process.env.CLAUDE_HANDLER_TIMEOUT_MS,
-  120_000,
-);
-
 interface ErrorBody {
   success: false;
   error: string;
@@ -70,7 +60,7 @@ export default async function handler(
   if (isRateLimitConfigured()) {
     try {
       const id = getClientId(req);
-      const { success, limit, remaining, reset } = await ratelimit.limit(id);
+      const { success, limit, remaining, reset } = await ratelimit!.limit(id);
       if (!success) {
         res.status(429).json({
           success: false,
@@ -184,17 +174,8 @@ export default async function handler(
 
     let aiScores: ClaudeResponse;
     try {
-      aiScores = await Promise.race([
-        claudeLayer1ContextPromise.then((context) =>
-          getClaudeScores(crawlResult.pages, context),
-        ),
-        new Promise<never>((_, reject) =>
-          setTimeout(
-            () => reject(new Error("Claude timeout")),
-            CLAUDE_TIMEOUT_MS,
-          ),
-        ),
-      ]);
+      const context = await claudeLayer1ContextPromise;
+      aiScores = await getClaudeScores(crawlResult.pages, context);
     } catch (err) {
       console.error("Claude error:", err);
       res.status(200).json({
