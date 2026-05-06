@@ -93,14 +93,15 @@ const PILLAR_ALIASES: Record<string, string> = {
 };
 
 function normalizePriorityFix(fix: PriorityFix): PriorityFix {
+  const rawPillar = typeof fix.pillar === "string" ? fix.pillar.trim().toLowerCase() : "";
   const canonicalPillar =
     QUESTION_TO_PILLAR[fix.question_ref] ??
-    PILLAR_ALIASES[fix.pillar.trim().toLowerCase()] ??
-    fix.pillar.trim().toLowerCase();
+    PILLAR_ALIASES[rawPillar] ??
+    rawPillar;
 
   return {
     ...fix,
-    pillar: canonicalPillar,
+    pillar: canonicalPillar || "unknown",
   };
 }
 
@@ -446,7 +447,7 @@ function isValidPriorityFix(value: unknown): value is PriorityFix {
   return (
     typeof fix.rank === "number" &&
     typeof fix.question_ref === "string" &&
-    typeof fix.pillar === "string" &&
+    (typeof fix.pillar === "string" || typeof fix.pillar === "undefined") &&
     typeof fix.issue === "string" &&
     typeof fix.fix === "string"
   );

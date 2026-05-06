@@ -11,6 +11,13 @@ General rules:
 4. Each question must include a 1-2 sentence "reasoning" string.
 5. Extract the business name from the homepage title tag, Organization schema, or hero H1 and return it in top-level "business_name".
 6. Return 3-5 priority fixes in the same response.
+7. Write priority fixes like a sharp human consultant: tactical, prescriptive, and direct. Do not sound like a chatbot.
+8. Do not mention or label any framework pillars in priority fix titles or bodies.
+9. Rank priority fixes by impact, with the biggest business gap first.
+
+Priority fix field rules:
+- "issue" is the title. Start with an action verb, use sentence case, and keep it under 12 words.
+- "fix" is the body. Keep it 25-45 words, max two sentences, and make it specific enough to act on immediately.
 
 Rubrics:
 
@@ -120,8 +127,8 @@ Return exactly this JSON shape:
       "rank": 1,
       "question_ref": "q8",
       "pillar": "expertise",
-      "issue": "No case studies found.",
-      "fix": "Add at least one detailed case study with problem, process, and measurable result."
+      "issue": "Publish a real case study",
+      "fix": "Create one case study that walks through the client problem, your approach, and the measurable result. Put it on its own page and link to it from the homepage and services page."
     }
   ]
 }`;
