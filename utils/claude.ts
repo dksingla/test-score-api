@@ -1,7 +1,8 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { getClaudeSystemPrompt } from "./claudePrompt";
+import { calcQ2, calcQ3, calcQ17, calcQ18 } from "./layer1Calculators";
 import type { Layer1Signals } from "./layer1";
-import type { PageData } from "./types";
+import type { PageData, RobotsMeta } from "./types";
 
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY!,
@@ -152,6 +153,10 @@ interface Payload {
     case_study_count: number;
     person_schema_on_about: boolean;
     review_schema_present: boolean;
+    q2_score: number;
+    q3_score: number;
+    q17_score: number;
+    q18_score: number;
   };
   site_summary: {
     business_names: string[];
@@ -365,8 +370,13 @@ function buildSiteSummary(pages: PageData[]) {
 
 function buildPayload(
   pages: PageData[],
-  layer1?: Pick<Layer1Signals, "performance" | "conversion">,
+  robots: RobotsMeta,
+  layer1?: Layer1Signals,
 ): Payload {
+  const q2 = calcQ2(pages, robots, layer1);
+  const q3 = calcQ3(pages);
+  const q17 = calcQ17(pages, layer1);
+  const q18 = calcQ18(pages, layer1);
   const selected = pickBestPages(pages);
   const siteSummary = buildSiteSummary(pages);
   const homepage = trimPage(selected.homepage ?? null, 1500);
@@ -400,6 +410,10 @@ function buildPayload(
       review_schema_present: pages.some(
         (page) => page.schemaSignals.reviewOrAggregateRating,
       ),
+      q2_score: q2.score,
+      q3_score: q3.score,
+      q17_score: q17.score,
+      q18_score: q18.score,
     },
     site_summary: {
       business_names: siteSummary.business_names,
@@ -602,7 +616,7 @@ async function requestClaudeAnalysis(payload: Payload): Promise<ClaudeResponse> 
   };
 }
 
-export function buildDebugPayload(pages: PageData[]): {
+export function buildDebugPayload(pages: PageData[], robots: RobotsMeta): {
   selectedPages: {
     homepage: PageData | undefined;
     about: PageData | null;
@@ -617,7 +631,7 @@ export function buildDebugPayload(pages: PageData[]): {
   promptText: string;
 } {
   const selected = pickBestPages(pages);
-  const trimmedPayload = buildPayload(pages);
+  const trimmedPayload = buildPayload(pages, robots);
 
   return {
     selectedPages: {
@@ -637,8 +651,9 @@ export function buildDebugPayload(pages: PageData[]): {
 
 export async function getClaudeScores(
   pages: PageData[],
-  layer1?: Pick<Layer1Signals, "performance" | "conversion">,
+  robots: RobotsMeta,
+  layer1?: Layer1Signals,
 ): Promise<ClaudeResponse> {
-  const payload = buildPayload(pages, layer1);
+  const payload = buildPayload(pages, robots, layer1);
   return requestClaudeAnalysis(payload);
 }

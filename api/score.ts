@@ -152,30 +152,11 @@ export default async function handler(
       pageSpeedPromise,
     ).catch((): Layer1Signals | undefined => undefined);
 
-    const claudeLayer1ContextPromise = Promise.all([
-      pageSpeedPromise,
-      Promise.resolve(
-        crawlResult.pages.filter((page) => page.hasEmailForm).length,
-      ),
-    ]).then(([performance, formsWithEmail]) => ({
-      performance,
-      conversion: {
-        totalForms: crawlResult.pages.filter((page) => page.hasForm).length,
-        totalFormsWithEmail: formsWithEmail,
-        totalCTAs: crawlResult.pages.reduce(
-          (sum, page) => sum + page.ctaTexts.length,
-          0,
-        ),
-        hasLeadMagnetSignals: crawlResult.pages.some((page) =>
-          page.ctaTexts.some((cta) => /free|download|guide|ebook|trial|demo/i.test(cta)),
-        ),
-      },
-    }));
-
     let aiScores: ClaudeResponse;
+    let layer1: Layer1Signals | undefined;
     try {
-      const context = await claudeLayer1ContextPromise;
-      aiScores = await getClaudeScores(crawlResult.pages, context);
+      layer1 = await layer1Promise;
+      aiScores = await getClaudeScores(crawlResult.pages, robots, layer1);
     } catch (err) {
       console.error("Claude error:", err);
       res.status(200).json({
@@ -189,9 +170,6 @@ export default async function handler(
       res.status(200).json(aiScores);
       return;
     }
-
-    // layer1 should already be resolved; await is effectively instant
-    const layer1 = await layer1Promise;
 
     // ─────────────────────────────────────────────
     // STEP 3: Scoring Engine

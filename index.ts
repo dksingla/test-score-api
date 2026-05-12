@@ -1,4 +1,5 @@
 import "dotenv/config";
+import cors from "cors";
 import express from "express";
 import handler from "./api/score";
 import handlerCrawl from "./api/crawl";
@@ -6,6 +7,18 @@ import handlerDebug from "./api/debug";
 import type { ApiRequest, ApiResponse } from "./utils/types";
 
 const app = express();
+
+const allowedOrigin =
+  process.env.FRONTEND_URL?.trim() || "http://localhost:3000";
+
+app.use(
+  cors({
+    origin: allowedOrigin,
+    methods: ["POST"],
+    allowedHeaders: ["Content-Type", "Authorization"],
+  }),
+);
+
 app.use(express.json());
 
 app.post("/api/score", (req, res) => {

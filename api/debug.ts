@@ -70,7 +70,7 @@ export default async function handler(
         robots,
         pageSpeedPromise,
       ).catch(() => null),
-      Promise.resolve(buildDebugPayload(crawlResult.pages)),
+      Promise.resolve(buildDebugPayload(crawlResult.pages, robots)),
     ]);
 
     // ── STEP 3: Return everything ──────────────────────────────────────────────

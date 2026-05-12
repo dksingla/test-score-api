@@ -1,5 +1,6 @@
 import axios from "axios";
 import type { PriorityFix } from "./claude";
+import { sendWebhookFailureEmail } from "./email";
 
 const WEBHOOK_TIMEOUT_MS = 10_000;
 const WEBHOOK_ATTEMPTS = 3;
@@ -150,14 +151,34 @@ export async function sendScorecardWebhook(
     }
   }
 
+  const failedAt = new Date().toISOString();
+
   console.error("[webhook] delivery failed after 3 attempts", {
     contact: payload.contact,
     payload,
     status: lastStatus,
     error: lastError,
     responseBody: lastResponseBody,
-    failedAt: new Date().toISOString(),
+    failedAt,
   });
+
+  try {
+    await sendWebhookFailureEmail({
+      payload,
+      attempts: WEBHOOK_ATTEMPTS,
+      status: lastStatus,
+      error: lastError,
+      responseBody: lastResponseBody,
+      failedAt,
+    });
+  } catch (emailError) {
+    console.error("[webhook] fallback email failed", {
+      contact: payload.contact,
+      error:
+        emailError instanceof Error ? emailError.message : String(emailError),
+      failedAt: new Date().toISOString(),
+    });
+  }
 
   return {
     delivered: false,

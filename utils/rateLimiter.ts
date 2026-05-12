@@ -15,7 +15,7 @@ const redis = hasRedisConfig
 export const ratelimit = redis
   ? new Ratelimit({
       redis,
-      limiter: Ratelimit.slidingWindow(1, "60 m"),
+      limiter: Ratelimit.slidingWindow(10, "60 m"),
       analytics: true,
     })
   : null;
