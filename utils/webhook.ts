@@ -122,6 +122,11 @@ export async function sendScorecardWebhook(
       });
 
       if (response.status >= 200 && response.status < 300) {
+        console.log("[webhook] delivery succeeded", {
+          contact: payload.contact,
+          attempts: attempt,
+          status: response.status,
+        });
         return {
           delivered: true,
           attempts: attempt,

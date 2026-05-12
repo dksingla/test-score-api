@@ -1,4 +1,5 @@
 import axios from "axios";
+import { waitUntil } from "@vercel/functions";
 import { normalizeUrl } from "../utils/crawler";
 import { hybridCrawl } from "../utils/hybridCrawl";
 import { fetchRobotsMeta } from "../utils/robots";
@@ -204,9 +205,11 @@ export default async function handler(
         priorityFixes: final.priorityFixes,
       });
 
-      sendScorecardWebhook(webhookPayload).catch((err) => {
-        console.error("[score] webhook sender crashed:", err);
-      });
+      waitUntil(
+        sendScorecardWebhook(webhookPayload).catch((err) => {
+          console.error("[score] webhook sender crashed:", err);
+        }),
+      );
     } else {
       console.log("[score] webhook skipped (GHL_WEBHOOK_URL not set)");
     }
