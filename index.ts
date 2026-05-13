@@ -8,16 +8,53 @@ import type { ApiRequest, ApiResponse } from "./utils/types";
 
 const app = express();
 
-const allowedOrigin =
-  process.env.FRONTEND_URL?.trim() || "http://localhost:3000";
+const normalizeOrigin = (value: string) => value.trim().replace(/\/+$/, "");
 
-app.use(
-  cors({
-    origin: allowedOrigin,
-    methods: ["POST"],
-    allowedHeaders: ["Content-Type", "Authorization"],
-  }),
-);
+const allowedOrigins = (process.env.FRONTEND_URL || "http://localhost:3000")
+  .split(",")
+  .map((origin) => normalizeOrigin(origin))
+  .filter(Boolean);
+
+const isOriginAllowed = (requestOrigin?: string) => {
+  if (!requestOrigin) {
+    return true;
+  }
+
+  const normalizedRequestOrigin = normalizeOrigin(requestOrigin);
+
+  return allowedOrigins.some((allowedOrigin) => {
+    if (allowedOrigin.startsWith("*.")) {
+      const domain = allowedOrigin.slice(2);
+      return (
+        normalizedRequestOrigin === `https://${domain}` ||
+        normalizedRequestOrigin.endsWith(`.${domain}`)
+      );
+    }
+
+    return allowedOrigin === normalizedRequestOrigin;
+  });
+};
+
+const corsOptions = {
+  origin(
+    origin: string | undefined,
+    callback: (err: Error | null, allow?: boolean) => void,
+  ) {
+    if (isOriginAllowed(origin)) {
+      return callback(null, true);
+    }
+
+    return callback(
+      new Error(`CORS blocked for origin: ${origin ?? "unknown"}`),
+    );
+  },
+  methods: ["POST"],
+  allowedHeaders: ["Content-Type", "Authorization"],
+  optionsSuccessStatus: 204,
+};
+
+app.use(cors(corsOptions));
+app.options("*", cors(corsOptions));
 
 app.use(express.json());
 
