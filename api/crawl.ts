@@ -2,6 +2,7 @@ import { normalizeUrl } from "../utils/crawler";
 import { hybridCrawl } from "../utils/hybridCrawl";
 import { fetchRobotsMeta } from "../utils/robots";
 import { collectLayer1Signals, fetchPageSpeed } from "../utils/layer1";
+import { applyCors } from "../utils/cors";
 
 import type { ApiRequest, ApiResponse } from "../utils/types";
 
@@ -19,6 +20,10 @@ export default async function handler(
   req: ApiRequest,
   res: ApiResponse,
 ): Promise<void> {
+  if (applyCors(req, res)) {
+    return;
+  }
+
   if (req.method !== "POST") {
     return sendError(res, 405, "Method not allowed");
   }

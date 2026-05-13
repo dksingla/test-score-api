@@ -74,6 +74,10 @@ app.post("/api/score", (req, res) => {
       res.status(code);
       return apiRes;
     },
+    setHeader(name, value) {
+      res.setHeader(name, value);
+      return apiRes;
+    },
     json(data) {
       return res.json(data);
     },
@@ -100,6 +104,10 @@ app.post("/api/crawl", (req, res) => {
       res.status(code);
       return apiRes;
     },
+    setHeader(name, value) {
+      res.setHeader(name, value);
+      return apiRes;
+    },
     json(data) {
       return res.json(data);
     },
@@ -121,6 +129,10 @@ app.post("/api/debug", (req, res) => {
   const apiRes: ApiResponse = {
     status(code) {
       res.status(code);
+      return apiRes;
+    },
+    setHeader(name, value) {
+      res.setHeader(name, value);
       return apiRes;
     },
     json(data) {

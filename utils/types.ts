@@ -80,5 +80,6 @@ export interface ApiRequest {
 // Vercel's VercelResponse and Express's Response.
 export interface ApiResponse {
   status(code: number): ApiResponse;
+  setHeader(name: string, value: string): ApiResponse;
   json(data: unknown): unknown;
 }

@@ -7,6 +7,7 @@ import { getClaudeScores } from "../utils/claude";
 import { calculateScore } from "../utils/scoring";
 import { collectLayer1Signals, fetchPageSpeed } from "../utils/layer1";
 import { ratelimit } from "../utils/rateLimiter";
+import { applyCors } from "../utils/cors";
 import {
   buildScorecardWebhookPayload,
   sendScorecardWebhook,
@@ -53,6 +54,10 @@ export default async function handler(
   req: ApiRequest,
   res: ApiResponse,
 ): Promise<void> {
+  if (applyCors(req, res)) {
+    return;
+  }
+
   if (req.method !== "POST") {
     return sendError(res, 405, "Method not allowed");
   }
