@@ -8,7 +8,7 @@ import { discoverSitemapUrls } from "./layer1";
 import { parseHTML } from "./parser";
 import { PAGE_TYPE_RULES } from "./pageSelectionRules";
 import { renderWithPlaywright } from "./playwright";
-import type { CrawlError, ErrorType, PageData } from "./types";
+import type { CrawlError, CrawlResult, ErrorType, PageData } from "./types";
 
 const CRAWL_HEADERS = {
   "User-Agent":
@@ -80,6 +80,9 @@ function classifyError(err: unknown): { type: ErrorType; message: string } {
     ) {
       return { type: "blocked", message: err.message };
     }
+    if (lowered.includes("non-html response")) {
+      return { type: "non_html", message: err.message };
+    }
   }
 
   if (axios.isAxiosError(err)) {
@@ -89,6 +92,12 @@ function classifyError(err: unknown): { type: ErrorType; message: string } {
     ) {
       return { type: "timeout", message: "Request timed out" };
     }
+    if (err.code === "ECONNREFUSED" || err.code === "ECONNRESET") {
+      return {
+        type: "connection_error",
+        message: `Connection failed (${err.code})`,
+      };
+    }
     const status = err.response?.status;
     if (status === 404) {
       return {
@@ -97,7 +106,7 @@ function classifyError(err: unknown): { type: ErrorType; message: string } {
           "Page not found (404) — likely a client-side SPA route without server-level routing",
       };
     }
-    if (status === 401 || status === 403 || status === 429) {
+    if (status !== undefined && status >= 400 && status < 500) {
       return { type: "blocked", message: `Access denied (HTTP ${status})` };
     }
     if (status !== undefined && status >= 500) {
@@ -112,6 +121,26 @@ function classifyError(err: unknown): { type: ErrorType; message: string } {
 
 function isChallengePageHtml(html: string): boolean {
   return isCloudflareChallengeHtml(html);
+}
+
+function isHardHomepageError(type: ErrorType): boolean {
+  return (
+    type === "timeout" ||
+    type === "blocked" ||
+    type === "not_found" ||
+    type === "server_error" ||
+    type === "connection_error" ||
+    type === "non_html"
+  );
+}
+
+function isHtmlContentType(contentType: unknown): boolean {
+  if (typeof contentType !== "string") return true;
+  const normalized = contentType.toLowerCase();
+  return (
+    normalized.includes("text/html") ||
+    normalized.includes("application/xhtml+xml")
+  );
 }
 
 function logCrawlFailure(url: string, stage: string, err: unknown): void {
@@ -184,6 +213,12 @@ async function fetchHTML(
         signal,
       });
 
+      if (!isHtmlContentType(headers["content-type"])) {
+        throw new Error(
+          `Non-HTML response (${String(headers["content-type"])})`,
+        );
+      }
+
       if (typeof data === "string") {
         if (isChallengePageHtml(data)) {
           throw new Error("Cloudflare verification page returned");
@@ -196,13 +231,7 @@ async function fetchHTML(
               : null,
         };
       }
-      return {
-        html: data,
-        lastModified:
-          typeof headers["last-modified"] === "string"
-            ? headers["last-modified"]
-            : null,
-      };
+      throw new Error("Non-HTML response");
     } catch (err) {
       lastErr = err;
       if (signal.aborted) break;
@@ -765,6 +794,11 @@ async function fetchHomepageArtifact(
     return artifact;
   } catch (err) {
     logCrawlFailure(baseUrl, "homepage-fetch", err);
+    const classified = classifyError(err);
+    if (isHardHomepageError(classified.type)) {
+      throw err;
+    }
+
     const rendered = await renderWithTimeout(baseUrl);
     if (rendered && !isChallengePageHtml(rendered)) {
       const artifact: PageArtifact = {
@@ -786,7 +820,7 @@ async function fetchHomepageArtifact(
 export async function crawlPages(
   baseUrl: string,
   signal: AbortSignal,
-): Promise<{ pages: PageData[]; errors: CrawlError[] }> {
+): Promise<CrawlResult> {
   const pages: PageData[] = [];
   const errors: CrawlError[] = [];
   console.log(`[crawl] Starting crawl for ${baseUrl}`);
@@ -802,22 +836,34 @@ export async function crawlPages(
     });
 
     const cloudflareResult = await fetchCloudflareCrawlResult(baseUrl, signal);
+    const homepageError =
+      cloudflareResult.homepageError ??
+      (cloudflareResult.pages.length === 0
+        ? {
+            url: baseUrl,
+            type: "blocked" as const,
+            message: "Homepage is protected and could not be fetched",
+          }
+        : null);
     return {
       pages: cloudflareResult.pages.slice(0, MAX_PAGES),
       errors: cloudflareResult.errors,
+      homepageError,
     };
   }
 
+  let homepageError: CrawlError | null = null;
   const homepageArtifact = await fetchHomepageArtifact(baseUrl, signal).catch(
     async (err) => {
       const classified = classifyError(err);
-      errors.push({ url: baseUrl, ...classified });
+      homepageError = { url: baseUrl, ...classified };
+      errors.push(homepageError);
       return null;
     },
   );
 
   if (!homepageArtifact) {
-    return { pages, errors };
+    return { pages, errors, homepageError };
   }
 
   const homepageCanonical = canonicalizeUrl(homepageArtifact.page.url);
@@ -1112,5 +1158,6 @@ export async function crawlPages(
   return {
     pages: pages.slice(0, MAX_PAGES),
     errors,
+    homepageError,
   };
 }

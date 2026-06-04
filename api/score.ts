@@ -1,4 +1,3 @@
-import axios from "axios";
 import { waitUntil } from "@vercel/functions";
 import { normalizeUrl } from "../utils/crawler";
 import { hybridCrawl } from "../utils/hybridCrawl";
@@ -13,7 +12,12 @@ import {
   sendScorecardWebhook,
 } from "../utils/webhook";
 
-import type { ApiRequest, ApiResponse } from "../utils/types";
+import type {
+  ApiRequest,
+  ApiResponse,
+  CrawlError,
+  RobotsMeta,
+} from "../utils/types";
 import type { ClaudeResponse } from "../utils/claude";
 import type { Layer1Signals } from "../utils/layer1";
 
@@ -22,9 +26,48 @@ interface ErrorBody {
   error: string;
 }
 
+interface AnalysisErrorBody {
+  success: false;
+  error: "scoring_failed";
+  message: string;
+  crawl_error?: {
+    type: CrawlError["type"];
+    message: string;
+  };
+}
+
 function sendError(res: ApiResponse, status: number, message: string): void {
   const body: ErrorBody = { success: false, error: message };
   res.status(status).json(body);
+}
+
+function sendAnalysisError(
+  res: ApiResponse,
+  message: string,
+  crawlError?: CrawlError | null,
+): void {
+  const body: AnalysisErrorBody = {
+    success: false,
+    error: "scoring_failed",
+    message,
+  };
+
+  if (crawlError) {
+    body.crawl_error = {
+      type: crawlError.type,
+      message: crawlError.message,
+    };
+  }
+
+  res.status(200).json(body);
+}
+
+function defaultRobotsMeta(): RobotsMeta {
+  return {
+    gptBotAllowed: null,
+    claudeBotAllowed: null,
+    perplexityBotAllowed: null,
+  };
 }
 
 function isRateLimitConfigured(): boolean {
@@ -127,23 +170,28 @@ export default async function handler(
     // ─────────────────────────────────────────────
     // STEP 1: Hybrid crawl (local + selective Olostep) + Robots
     // ─────────────────────────────────────────────
-    const [crawlResult, robots] = await Promise.all([
-      hybridCrawl(url, crawlController.signal),
-      fetchRobotsMeta(url),
-    ]);
+    const robotsPromise = fetchRobotsMeta(url).catch(defaultRobotsMeta);
+    const crawlResult = await hybridCrawl(url, crawlController.signal);
 
-    // Handle unreachable site (requirement)
-    if (crawlResult.pages.length === 0) {
-      res.status(200).json({
-        score: 0,
-        tier: "Hidden",
-        business_name: "",
-        pillars: {},
-        scores: {},
-        error: "Unable to crawl site",
-      });
+    if (crawlResult.homepageError) {
+      sendAnalysisError(
+        res,
+        "Analysis couldn't complete. We couldn't access the homepage.",
+        crawlResult.homepageError,
+      );
       return;
     }
+
+    if (crawlResult.pages.length === 0) {
+      sendAnalysisError(
+        res,
+        "Analysis couldn't complete. We couldn't read enough site content.",
+        crawlResult.errors[0] ?? null,
+      );
+      return;
+    }
+
+    const robots = await robotsPromise;
 
     // ─────────────────────────────────────────────
     // STEP 2: Claude AI + Layer 1 signals (parallel)

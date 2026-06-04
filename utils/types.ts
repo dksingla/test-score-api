@@ -49,6 +49,8 @@ export type ErrorType =
   | "blocked"
   | "not_found"
   | "server_error"
+  | "connection_error"
+  | "non_html"
   | "parse_error"
   | "unknown";
 
@@ -56,6 +58,12 @@ export interface CrawlError {
   url: string;
   type: ErrorType;
   message: string;
+}
+
+export interface CrawlResult {
+  pages: PageData[];
+  errors: CrawlError[];
+  homepageError: CrawlError | null;
 }
 
 export interface RobotsMeta {

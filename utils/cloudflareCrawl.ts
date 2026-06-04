@@ -6,7 +6,7 @@ import {
   buildCloudflareIncludePatterns,
   PAGE_TYPE_RULES,
 } from "./pageSelectionRules";
-import type { CrawlError, PageData } from "./types";
+import type { CrawlError, CrawlResult, PageData } from "./types";
 
 const BASE = "https://api.cloudflare.com/client/v4/accounts";
 
@@ -876,12 +876,28 @@ export async function fetchCloudflareCrawlPages(
 export async function fetchCloudflareCrawlResult(
   startUrl: string,
   signal: AbortSignal,
-): Promise<{ pages: PageData[]; errors: CrawlError[] }> {
+): Promise<CrawlResult> {
   if (!process.env.CLOUDFLARE_API_TOKEN?.trim()) {
-    return { pages: [], errors: [] };
+    return {
+      pages: [],
+      errors: [],
+      homepageError: {
+        url: startUrl,
+        type: "blocked",
+        message: "Cloudflare API token is not configured",
+      },
+    };
   }
   if (!process.env.CLOUDFLARE_ACCOUNT_ID?.trim()) {
-    return { pages: [], errors: [] };
+    return {
+      pages: [],
+      errors: [],
+      homepageError: {
+        url: startUrl,
+        type: "blocked",
+        message: "Cloudflare account ID is not configured",
+      },
+    };
   }
 
   try {
@@ -898,6 +914,7 @@ export async function fetchCloudflareCrawlResult(
     return {
       pages: result.pages,
       errors: result.errors,
+      homepageError: result.homepageError,
     };
   } catch (err) {
     console.error(
@@ -914,6 +931,11 @@ export async function fetchCloudflareCrawlResult(
             err instanceof Error ? err.message : "Cloudflare crawl failed",
         },
       ],
+      homepageError: {
+        url: startUrl,
+        type: "unknown",
+        message: err instanceof Error ? err.message : "Cloudflare crawl failed",
+      },
     };
   }
 }

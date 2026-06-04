@@ -1,11 +1,11 @@
 import { crawlPages, probeProtection } from "./crawler";
 
-import type { CrawlError, PageData } from "./types";
+import type { CrawlResult } from "./types";
 
 export async function hybridCrawl(
   baseUrl: string,
   signal: AbortSignal,
-): Promise<{ pages: PageData[]; errors: CrawlError[] }> {
+): Promise<CrawlResult> {
   const probe = await probeProtection(baseUrl, signal);
 
   if (probe.protected) {
