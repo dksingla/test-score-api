@@ -12,7 +12,7 @@ import type { CrawlError, CrawlResult, ErrorType, PageData } from "./types";
 
 const CRAWL_HEADERS = {
   "User-Agent":
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
   Accept: "text/html,application/xhtml+xml",
 };
 
@@ -548,7 +548,11 @@ function rankCaseStudyDetailCandidate(
     ) {
       score += 40;
     }
-    if (/\/(?:case-studies|case-study|success-stories|success-story|results)\//i.test(path)) {
+    if (
+      /\/(?:case-studies|case-study|success-stories|success-story|results)\//i.test(
+        path,
+      )
+    ) {
       score += 50;
     }
     if (candidate.url.includes("?")) score -= 20;
@@ -584,8 +588,7 @@ function collectHubDetailUrls(input: {
     .filter((candidate) => isDetailCandidate(listingUrl, candidate))
     .sort(
       (a, b) =>
-        rankDetailCandidate(listingUrl, b) -
-        rankDetailCandidate(listingUrl, a),
+        rankDetailCandidate(listingUrl, b) - rankDetailCandidate(listingUrl, a),
     )
     .map((candidate) => candidate.url)
     .filter((url, index, urls) => urls.indexOf(url) === index)
@@ -753,7 +756,33 @@ async function fetchLocalArtifact(
   url: string,
   signal: AbortSignal,
 ): Promise<PageArtifact> {
-  const { html, lastModified } = await fetchHTML(url, signal);
+  let html: string;
+  let lastModified: string | null;
+
+  try {
+    const fetched = await fetchHTML(url, signal);
+    html = fetched.html;
+    lastModified = fetched.lastModified;
+  } catch (err) {
+    const isVerificationPage =
+      err instanceof Error &&
+      err.message === "Cloudflare verification page returned";
+    if (!isVerificationPage) {
+      throw err;
+    }
+
+    const rendered = await renderWithTimeout(url);
+    if (!rendered || isChallengePageHtml(rendered)) {
+      throw err;
+    }
+
+    return {
+      html: rendered,
+      page: parseHTML(rendered, url),
+      source: "playwright",
+    };
+  }
+
   if (isChallengePageHtml(html)) {
     throw new Error("Cloudflare verification page returned");
   }
@@ -830,10 +859,13 @@ export async function crawlPages(
   const homepageProbe = await probeProtection(baseUrl, signal);
 
   if (homepageProbe.protected) {
-    console.log("[crawl] homepage probe blocked, switching directly to Cloudflare", {
-      baseUrl,
-      vendor: homepageProbe.vendor,
-    });
+    console.log(
+      "[crawl] homepage probe blocked, switching directly to Cloudflare",
+      {
+        baseUrl,
+        vendor: homepageProbe.vendor,
+      },
+    );
 
     const cloudflareResult = await fetchCloudflareCrawlResult(baseUrl, signal);
     const homepageError =
@@ -968,7 +1000,10 @@ export async function crawlPages(
         },
       );
 
-      const cloudflareResult = await fetchCloudflareCrawlResult(baseUrl, signal);
+      const cloudflareResult = await fetchCloudflareCrawlResult(
+        baseUrl,
+        signal,
+      );
 
       for (const page of cloudflareResult.pages) {
         const canonical = canonicalizeUrl(page.url);
@@ -1081,7 +1116,9 @@ export async function crawlPages(
   );
 
   if (!usedCloudflareSeedCrawl && caseStudiesPage && remainingCapacity() > 0) {
-    const caseStudiesArtifact = artifacts.get(canonicalizeUrl(caseStudiesPage.url));
+    const caseStudiesArtifact = artifacts.get(
+      canonicalizeUrl(caseStudiesPage.url),
+    );
     if (caseStudiesArtifact) {
       const caseStudyUrls = collectHubDetailUrls({
         html: caseStudiesArtifact.html,

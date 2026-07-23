@@ -84,6 +84,10 @@ const CHALLENGE_MARKERS = [
   "this website uses a security service to protect against malicious bots",
   "performance and security by cloudflare",
   "ray id:",
+  "robot challenge screen",
+  "checking the site connection security",
+  "/.well-known/sgcaptcha/",
+  "sgchallenge=",
 ] as const;
 
 function mustEnv(name: string): string {
@@ -105,7 +109,7 @@ function accountId(): string {
 const CLOUDFLARE_HTTP_TIMEOUT_MS = 60_000;
 const CLOUDFLARE_JOB_MAX_WAIT_MS = 4 * 60 * 1000;
 const BROWSER_RUN_QUICK_ACTION_USER_AGENT =
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36";
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
 const CLOUDFLARE_CONTENT_MAX_PAGES = 15;
 const CLOUDFLARE_CONTENT_FETCH_CONCURRENCY = 1;
 const CLOUDFLARE_CONTENT_BATCH_DELAY_MS = 15_000;
@@ -494,8 +498,7 @@ export async function fetchCloudflareRenderedHtml(
         endpoint,
         {
           url,
-          userAgent:
-            options?.userAgent ?? BROWSER_RUN_QUICK_ACTION_USER_AGENT,
+          userAgent: options?.userAgent ?? BROWSER_RUN_QUICK_ACTION_USER_AGENT,
           gotoOptions: {
             timeout: 45_000,
             waitUntil: "networkidle2",
@@ -724,12 +727,15 @@ async function waitForCompletion(
     }
 
     if (Date.now() - startedAt >= CLOUDFLARE_JOB_MAX_WAIT_MS) {
-      console.warn("[cloudflare-crawl] max wait reached, using latest job response", {
-        jobId,
-        waitedMs: Date.now() - startedAt,
-        finished: job.finished ?? null,
-        total: job.total ?? null,
-      });
+      console.warn(
+        "[cloudflare-crawl] max wait reached, using latest job response",
+        {
+          jobId,
+          waitedMs: Date.now() - startedAt,
+          finished: job.finished ?? null,
+          total: job.total ?? null,
+        },
+      );
       return { job, timedOut: true };
     }
 
@@ -759,7 +765,10 @@ async function fetchAllRecords(
 
 function classifyCloudflareRecord(record: CfRecord): CrawlError | null {
   if (record.status === "completed") {
-    if (typeof record.html === "string" && isCloudflareChallengeHtml(record.html)) {
+    if (
+      typeof record.html === "string" &&
+      isCloudflareChallengeHtml(record.html)
+    ) {
       return {
         url: record.url,
         type: "blocked",
@@ -815,12 +824,16 @@ async function parsePagesFromRecords(
 
       if (html && isCloudflareChallengeHtml(html)) {
         try {
-          const resolvedHtml = await fetchCloudflareRenderedHtml(record.url, signal, {
-            gotoOptions: {
-              timeout: 45_000,
-              waitUntil: "networkidle2",
+          const resolvedHtml = await fetchCloudflareRenderedHtml(
+            record.url,
+            signal,
+            {
+              gotoOptions: {
+                timeout: 45_000,
+                waitUntil: "networkidle2",
+              },
             },
-          });
+          );
           html = resolvedHtml ?? html;
         } catch (err) {
           errors.push({
@@ -952,7 +965,11 @@ export async function fetchCloudflarePage(
 export async function fetchCloudflareContentResult(
   url: string,
   signal: AbortSignal,
-): Promise<{ html: string | null; page: PageData | null; error: CrawlError | null }> {
+): Promise<{
+  html: string | null;
+  page: PageData | null;
+  error: CrawlError | null;
+}> {
   try {
     const html = await fetchCloudflareRenderedHtml(url, signal, {
       gotoOptions: {
@@ -1000,8 +1017,9 @@ async function fetchCandidateWithRetries(
   candidateUrl: string,
   signal: AbortSignal,
 ): Promise<Awaited<ReturnType<typeof fetchCloudflareContentResult>>> {
-  let lastResult: Awaited<ReturnType<typeof fetchCloudflareContentResult>> | null =
-    null;
+  let lastResult: Awaited<
+    ReturnType<typeof fetchCloudflareContentResult>
+  > | null = null;
 
   for (
     let attempt = 0;

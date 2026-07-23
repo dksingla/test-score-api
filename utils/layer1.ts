@@ -59,7 +59,7 @@ export interface SitemapDiscoveryResult {
 // adapter if you want to route sitemap/robots fetches through it too.
 const CRAWL_HEADERS = {
   "User-Agent":
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
 };
 
 function readTimeoutMs(envValue: string | undefined, fallback: number): number {
@@ -235,9 +235,9 @@ async function fetchXmlText(
         : "";
 
     if (
-      (!contentType.includes("xml") &&
-        !data.includes("<urlset") &&
-        !data.includes("<sitemapindex"))
+      !contentType.includes("xml") &&
+      !data.includes("<urlset") &&
+      !data.includes("<sitemapindex")
     ) {
       return { xml: null, blocked: false };
     }
@@ -368,9 +368,7 @@ export function resolveHomepage(pages: PageData[]): PageData | undefined {
  */
 export async function checkSitemap(baseUrl: string): Promise<boolean> {
   const result = await discoverSitemap(baseUrl);
-  return (
-    result.sitemapUrls.length > 0 || result.discoveredPageUrls.length > 0
-  );
+  return result.sitemapUrls.length > 0 || result.discoveredPageUrls.length > 0;
 }
 
 /**
@@ -380,9 +378,7 @@ export async function checkSitemap(baseUrl: string): Promise<boolean> {
  * Set GOOGLE_PAGESPEED_KEY in environment for higher rate limits.
  * Works without a key at reduced rate limits.
  */
-export async function fetchPageSpeed(
-  url: string,
-): Promise<{
+export async function fetchPageSpeed(url: string): Promise<{
   pageSpeedScore: number | null;
   mobileFriendly: boolean | null;
   error: string | null;
@@ -526,8 +522,8 @@ export function extractTechnicalSignals(pages: PageData[], robots: RobotsMeta) {
     /blog|article|post|news|insight|resource|latest/i.test(p.url),
   ).length;
 
-  const pagesWithDateModified = pages.filter((p) =>
-    Boolean(p.dateModified) || DATE_REGEX.test(p.bodyText.slice(0, 500)),
+  const pagesWithDateModified = pages.filter(
+    (p) => Boolean(p.dateModified) || DATE_REGEX.test(p.bodyText.slice(0, 500)),
   ).length;
 
   // ── Conversion ───────────────────────────────────────────────────────────
