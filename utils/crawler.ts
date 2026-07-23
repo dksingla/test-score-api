@@ -23,7 +23,7 @@ const MAX_PAGES = 15;
 const PROBE_CONCURRENCY = 4;
 // Browser fallbacks are memory-heavy in serverless runtimes. Keeping page
 // fetches serial also lets later pages reuse the SiteGround challenge cookie.
-const FETCH_CONCURRENCY = 1;
+const FETCH_CONCURRENCY = 3;
 const RETRY_DELAY_MS = 500;
 
 interface LinkCandidate {
