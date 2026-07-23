@@ -1,8 +1,9 @@
 // Keep this slightly above the 8 s external wrapper in crawler.ts so Playwright
 // self-terminates cleanly before the outer Promise.race resolves null.
-import { chromium } from "playwright-extra";
-import StealthPlugin from "puppeteer-extra-plugin-stealth";
+import { chromium as playwrightChromium } from "playwright-core";
 import type { Cookie } from "playwright-core";
+import { addExtra } from "playwright-extra";
+import StealthPlugin from "puppeteer-extra-plugin-stealth";
 import { isCloudflareChallengeHtml } from "./cloudflareCrawl";
 
 const PLAYWRIGHT_TIMEOUT_MS = 35000;
@@ -16,6 +17,9 @@ const CHALLENGE_WAIT_TIMEOUT_MS = 25000;
 const BROWSER_USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
 
+// Passing the implementation explicitly prevents serverless bundlers from
+// dropping playwright-core, which playwright-extra otherwise loads dynamically.
+const chromium = addExtra(playwrightChromium);
 chromium.use(StealthPlugin());
 
 const challengeCookiesByOrigin = new Map<string, Cookie[]>();
