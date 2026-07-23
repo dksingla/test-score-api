@@ -6,6 +6,28 @@ import { addExtra } from "playwright-extra";
 import StealthPlugin from "puppeteer-extra-plugin-stealth";
 import { isCloudflareChallengeHtml } from "./cloudflareCrawl";
 
+// Vercel's Node File Trace cannot discover the stealth plugin's dynamically
+// constructed dependency paths. Literal requires keep every enabled evasion
+// and its transitive preference plugins in the serverless bundle.
+require("puppeteer-extra-plugin-stealth/evasions/chrome.app");
+require("puppeteer-extra-plugin-stealth/evasions/chrome.csi");
+require("puppeteer-extra-plugin-stealth/evasions/chrome.loadTimes");
+require("puppeteer-extra-plugin-stealth/evasions/chrome.runtime");
+require("puppeteer-extra-plugin-stealth/evasions/defaultArgs");
+require("puppeteer-extra-plugin-stealth/evasions/iframe.contentWindow");
+require("puppeteer-extra-plugin-stealth/evasions/media.codecs");
+require("puppeteer-extra-plugin-stealth/evasions/navigator.hardwareConcurrency");
+require("puppeteer-extra-plugin-stealth/evasions/navigator.languages");
+require("puppeteer-extra-plugin-stealth/evasions/navigator.permissions");
+require("puppeteer-extra-plugin-stealth/evasions/navigator.plugins");
+require("puppeteer-extra-plugin-stealth/evasions/navigator.webdriver");
+require("puppeteer-extra-plugin-stealth/evasions/sourceurl");
+require("puppeteer-extra-plugin-stealth/evasions/user-agent-override");
+require("puppeteer-extra-plugin-stealth/evasions/webgl.vendor");
+require("puppeteer-extra-plugin-stealth/evasions/window.outerdimensions");
+require("puppeteer-extra-plugin-user-preferences");
+require("puppeteer-extra-plugin-user-data-dir");
+
 const PLAYWRIGHT_TIMEOUT_MS = 35000;
 const CHALLENGE_WAIT_TIMEOUT_MS = 25000;
 
@@ -52,7 +74,10 @@ export async function renderWithPlaywright(
 ): Promise<string | null> {
   try {
     const chromiumLib = await import("@sparticuz/chromium");
-    console.log("chromium started");
+    console.log("[playwright] runtime ready", {
+      adapter: "playwright-core+addExtra",
+      commit: process.env.VERCEL_GIT_COMMIT_SHA?.slice(0, 7) ?? null,
+    });
 
     const browser = await chromium.launch({
       headless: true,
