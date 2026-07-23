@@ -84,10 +84,6 @@ const CHALLENGE_MARKERS = [
   "this website uses a security service to protect against malicious bots",
   "performance and security by cloudflare",
   "ray id:",
-  "robot challenge screen",
-  "checking the site connection security",
-  "/.well-known/sgcaptcha/",
-  "sgchallenge=",
 ] as const;
 
 function mustEnv(name: string): string {
