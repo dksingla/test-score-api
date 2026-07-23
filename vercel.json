@@ -5,7 +5,8 @@
       "memory": 1024
     },
     "api/crawl.ts": {
-      "memory": 512
+      "memory": 1024,
+      "maxDuration": 300
     },
     "api/debug.ts": {
       "memory": 512

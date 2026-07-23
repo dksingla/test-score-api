@@ -155,7 +155,11 @@ export async function renderWithPlaywright(
       await browser.close();
       console.log("browser closed");
     }
-  } catch {
+  } catch (err) {
+    console.error("[playwright] render failed", {
+      url,
+      message: err instanceof Error ? err.message : "Unknown error",
+    });
     return null;
   }
 }

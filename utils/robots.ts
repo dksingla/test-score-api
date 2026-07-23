@@ -12,6 +12,14 @@ interface RobotsGroup {
   rules: string[];
 }
 
+function unavailableRobotsMeta(): RobotsMeta {
+  return {
+    gptBotAllowed: null,
+    claudeBotAllowed: null,
+    perplexityBotAllowed: null,
+  };
+}
+
 /**
  * Parses robots.txt into user-agent groups while preserving grouped directives.
  */
@@ -80,21 +88,48 @@ function isExplicitlyDisallowed(robotsTxt: string, botName: string): boolean {
 export async function fetchRobotsMeta(baseUrl: string): Promise<RobotsMeta> {
   try {
     const { origin } = new URL(baseUrl);
-    const { data } = await axios.get<string>(`${origin}/robots.txt`, {
+    const robotsUrl = `${origin}/robots.txt`;
+    const response = await axios.get<string>(robotsUrl, {
       timeout: ROBOTS_TIMEOUT_MS,
       headers: CRAWL_HEADERS,
+      validateStatus: () => true,
     });
+
+    const contentType = response.headers["content-type"];
+    const isHtmlResponse =
+      typeof contentType === "string" &&
+      contentType.toLowerCase().includes("text/html");
+
+    if (
+      response.status < 200 ||
+      response.status >= 300 ||
+      isHtmlResponse
+    ) {
+      console.warn("[robots] unavailable", {
+        url: robotsUrl,
+        status: response.status,
+        contentType: contentType ?? null,
+        siteGroundCaptcha: response.headers["sg-captcha"] ?? null,
+      });
+      return unavailableRobotsMeta();
+    }
+
     return {
-      gptBotAllowed: !isExplicitlyDisallowed(data, "GPTBot"),
-      claudeBotAllowed: !isExplicitlyDisallowed(data, "ClaudeBot"),
-      perplexityBotAllowed: !isExplicitlyDisallowed(data, "PerplexityBot"),
+      gptBotAllowed: !isExplicitlyDisallowed(response.data, "GPTBot"),
+      claudeBotAllowed: !isExplicitlyDisallowed(
+        response.data,
+        "ClaudeBot",
+      ),
+      perplexityBotAllowed: !isExplicitlyDisallowed(
+        response.data,
+        "PerplexityBot",
+      ),
     };
   } catch (err) {
-    console.log("error", err);
-    return {
-      gptBotAllowed: null,
-      claudeBotAllowed: null,
-      perplexityBotAllowed: null,
-    };
+    console.warn("[robots] request failed", {
+      url: baseUrl,
+      message: err instanceof Error ? err.message : "Unknown error",
+    });
+    return unavailableRobotsMeta();
   }
 }

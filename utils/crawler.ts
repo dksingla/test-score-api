@@ -21,7 +21,9 @@ const REQUEST_TIMEOUT_MS = 8000;
 const PLAYWRIGHT_WRAPPER_TIMEOUT_MS = 40000;
 const MAX_PAGES = 15;
 const PROBE_CONCURRENCY = 4;
-const FETCH_CONCURRENCY = 3;
+// Browser fallbacks are memory-heavy in serverless runtimes. Keeping page
+// fetches serial also lets later pages reuse the SiteGround challenge cookie.
+const FETCH_CONCURRENCY = 1;
 const RETRY_DELAY_MS = 500;
 
 interface LinkCandidate {
@@ -767,10 +769,19 @@ async function fetchLocalArtifact(
     const isVerificationPage =
       err instanceof Error &&
       err.message === "Cloudflare verification page returned";
-    if (!isVerificationPage) {
+    const status = axios.isAxiosError(err) ? err.response?.status : undefined;
+    const isBrowserRetryableStatus =
+      status !== undefined && [401, 403, 429, 503].includes(status);
+
+    if (!isVerificationPage && !isBrowserRetryableStatus) {
       throw err;
     }
 
+    console.log("[crawl] retrying page with stealth browser", {
+      url,
+      status: status ?? null,
+      reason: isVerificationPage ? "challenge_page" : "blocked_response",
+    });
     const rendered = await renderWithTimeout(url);
     if (!rendered || isChallengePageHtml(rendered)) {
       throw err;
