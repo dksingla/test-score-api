@@ -500,7 +500,9 @@ export function extractTechnicalSignals(pages: PageData[], robots: RobotsMeta) {
       Boolean(homepage?.schemaSignals.productOrService) ||
       Boolean(homepage?.schemaSignals.localBusinessOrOrganization) ||
       Boolean(homepage?.schemaSignals.reviewOrAggregateRating),
-    hasAnalyticsTracking: Boolean(homepage?.ga4Id || homepage?.gtmId),
+    hasAnalyticsTracking: Boolean(
+      homepage?.ga4Id || homepage?.googleTagId || homepage?.gtmId,
+    ),
     schemaTypes: {
       faq: pages.some((page) => page.schemaSignals.faq),
       productOrService: pages.some(

@@ -1,8 +1,35 @@
 import * as cheerio from "cheerio";
 import type { PageData, SchemaSignals, SocialProfiles } from "./types";
 
-const GA4_PATTERN = /G-[A-Z0-9]{4,}/;
-const GTM_PATTERN = /GTM-[A-Z0-9]{4,}/;
+const GA4_PATTERN = /\bG-[A-Z0-9]{4,}\b/i;
+const GOOGLE_TAG_PATTERN = /\bGT-[A-Z0-9]{4,}\b/i;
+const GTM_PATTERN = /\bGTM-[A-Z0-9]{4,}\b/i;
+const EMAIL_CAPTURE_EMBED_PATTERNS: Array<{
+  pattern: RegExp;
+  provider: string;
+}> = [
+  {
+    pattern:
+      /(?:leadconnectorhq\.com|leadconnectorhq\.io|msgsndr\.com|links\.gohighlevel\.com|forms\.gohighlevel\.com)/i,
+    provider: "GoHighLevel/LeadConnector embed",
+  },
+  {
+    pattern: /(?:hubspot\.com|hsforms\.net|js\.hsforms\.net)/i,
+    provider: "HubSpot form embed",
+  },
+  {
+    pattern: /(?:convertkit\.com|kit\.com|ck\.page)/i,
+    provider: "Kit/ConvertKit form embed",
+  },
+  {
+    pattern: /(?:mailchimp\.com|list-manage\.com)/i,
+    provider: "Mailchimp form embed",
+  },
+  {
+    pattern: /(?:typeform\.com|tally\.so|jotform\.com)/i,
+    provider: "third-party form embed",
+  },
+];
 
 const CTA_KEYWORDS = [
   "contact",
@@ -107,11 +134,12 @@ function extractSchemaSignals(schemas: string[]): {
           }
         });
 
-        const dateModified = obj.dateModified;
-        if (typeof dateModified === "string") {
-          const iso = coerceIsoDate(dateModified);
-          if (iso && (!latestDateModified || iso > latestDateModified)) {
-            latestDateModified = iso;
+        for (const rawDate of [obj.dateModified, obj.datePublished]) {
+          if (typeof rawDate === "string") {
+            const iso = coerceIsoDate(rawDate);
+            if (iso && (!latestDateModified || iso > latestDateModified)) {
+              latestDateModified = iso;
+            }
           }
         }
       });
@@ -336,9 +364,13 @@ export function parseHTML(
 
   // ── GA4 ───────────────────────────────────────────────────────────────────
   const ga4Match = html.match(GA4_PATTERN);
-  const ga4Id = ga4Match ? ga4Match[0] : null;
+  const ga4Id = ga4Match ? ga4Match[0].toUpperCase() : null;
+  const googleTagMatch = html.match(GOOGLE_TAG_PATTERN);
+  const googleTagId = googleTagMatch
+    ? googleTagMatch[0].toUpperCase()
+    : null;
   const gtmMatch = html.match(GTM_PATTERN);
-  const gtmId = gtmMatch ? gtmMatch[0] : null;
+  const gtmId = gtmMatch ? gtmMatch[0].toUpperCase() : null;
 
   // ── Business name ─────────────────────────────────────────────────────────
   const businessName =
@@ -348,7 +380,7 @@ export function parseHTML(
 
   // ── CTA + form signals ────────────────────────────────────────────────────
   const forms = $("form");
-  const hasForm = forms.length > 0;
+  const emailCaptureEvidence: string[] = [];
   let hasEmailForm = false;
 
   forms.each((_, el) => {
@@ -357,8 +389,21 @@ export function parseHTML(
       form.find('input[type="email"], input[name*="email" i], input[id*="email" i]').length > 0
     ) {
       hasEmailForm = true;
+      emailCaptureEvidence.push("native email form");
     }
   });
+
+  for (const { pattern, provider } of EMAIL_CAPTURE_EMBED_PATTERNS) {
+    if (pattern.test(html)) {
+      emailCaptureEvidence.push(provider);
+    }
+  }
+
+  const uniqueEmailCaptureEvidence = [...new Set(emailCaptureEvidence)];
+  if (uniqueEmailCaptureEvidence.length > 0) {
+    hasEmailForm = true;
+  }
+  const hasForm = forms.length > 0 || uniqueEmailCaptureEvidence.length > 0;
 
   const ctaTexts: string[] = [];
   $("a, button").each((_, el) => {
@@ -378,10 +423,31 @@ export function parseHTML(
     typeof metadata?.sitemapLastmod === "string"
       ? coerceIsoDate(metadata.sitemapLastmod)
       : null;
+  const metaPublished = [
+    $("meta[property='article:published_time']").attr("content"),
+    $("meta[name='article:published_time']").attr("content"),
+    $("meta[property='article:modified_time']").attr("content"),
+    $("meta[name='article:modified_time']").attr("content"),
+  ]
+    .filter((value): value is string => Boolean(value))
+    .map(coerceIsoDate)
+    .filter((value): value is string => Boolean(value))
+    .sort()
+    .at(-1);
+  const articleTime = $("article time[datetime], main time[datetime]")
+    .map((_, el) => $(el).attr("datetime"))
+    .get()
+    .filter((value): value is string => Boolean(value))
+    .map(coerceIsoDate)
+    .filter((value): value is string => Boolean(value))
+    .sort()
+    .at(-1);
   const dateModified = pickLatestIsoDate(
     schemaDateModified,
     httpLastModified,
     sitemapLastmod,
+    metaPublished,
+    articleTime,
   );
   const wordCount = bodyText ? bodyText.split(/\s+/).filter(Boolean).length : 0;
 
@@ -397,10 +463,12 @@ export function parseHTML(
     outboundLinks,
     isJSSite,
     ga4Id,
+    googleTagId,
     gtmId,
     businessName,
     hasForm,
     hasEmailForm,
+    emailCaptureEvidence: uniqueEmailCaptureEvidence,
     ctaTexts: [...new Set(ctaTexts)],
     wordCount,
     unorderedListCount: $("ul").length,

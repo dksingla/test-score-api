@@ -2,8 +2,12 @@ import type { ClaudeScore } from "./claude";
 import type { Layer1Signals } from "./layer1";
 import type { PageData, RobotsMeta } from "./types";
 
-function layer1Reason(score: number, reasoning: string): ClaudeScore {
-  return { score, reasoning };
+function layer1Reason(
+  score: number,
+  reasoning: string,
+  evidenceStatus: "verified" | "unknown" = "verified",
+): ClaudeScore {
+  return { score, reasoning, evidence_status: evidenceStatus };
 }
 
 function resolveHomepage(pages: PageData[]): PageData | undefined {
@@ -37,9 +41,10 @@ export function calcQ2(
     pages.some((page) => page.schemaSignals.productOrService);
   const hasSitemap = layer1?.hasSitemap ?? false;
   const aiBotsAllowed =
-    (layer1?.robots.gptBotAllowed ?? robots.gptBotAllowed) !== false &&
-    (layer1?.robots.claudeBotAllowed ?? robots.claudeBotAllowed) !== false &&
-    (layer1?.robots.perplexityBotAllowed ?? robots.perplexityBotAllowed) !== false;
+    (layer1?.robots.gptBotAllowed ?? robots.gptBotAllowed) === true &&
+    (layer1?.robots.claudeBotAllowed ?? robots.claudeBotAllowed) === true &&
+    (layer1?.robots.perplexityBotAllowed ?? robots.perplexityBotAllowed) ===
+      true;
 
   const passed: string[] = [];
   let earned = 0;
@@ -93,24 +98,53 @@ export function calcQ2(
       ? `${earned}/9 technical sub-signals passed: ${passed.join("; ")}`
       : "0/9 technical sub-signals passed.";
 
+  const hasUnavailableEvidence =
+    typeof pageSpeedScore !== "number" ||
+    typeof mobileFriendly !== "boolean" ||
+    [robots.gptBotAllowed, robots.claudeBotAllowed, robots.perplexityBotAllowed]
+      .some((value) => value === null);
+
+  if (hasUnavailableEvidence) {
+    return layer1Reason(
+      1,
+      `Technical checks were incomplete; verified passes: ${passed.join("; ") || "none"}.`,
+      "unknown",
+    );
+  }
+
   return layer1Reason(score, reasoning);
 }
 
 export function calcQ3(pages: PageData[]): ClaudeScore {
   const homepage = resolveHomepage(pages);
   if (!homepage) {
-    return layer1Reason(0, "No homepage data available.");
+    return layer1Reason(
+      1,
+      "Analytics setup could not be verified because homepage data was unavailable.",
+      "unknown",
+    );
   }
 
   if (homepage.ga4Id) {
     return layer1Reason(2, `GA4 tracking detected via ${homepage.ga4Id}.`);
   }
 
+  if (homepage.googleTagId) {
+    return layer1Reason(
+      2,
+      `Google tag detected via ${homepage.googleTagId}.`,
+    );
+  }
+
   if (homepage.gtmId) {
     return layer1Reason(2, `GTM container detected via ${homepage.gtmId}.`);
   }
 
-  return layer1Reason(0, "No GA4 or GTM container detected.");
+  return layer1Reason(
+    1,
+    "Analytics setup could not be verified from the captured homepage markup.",
+    "unknown",
+  );
 }
 
 export function calcQ17(
@@ -158,7 +192,11 @@ export function calcQ17(
     return layer1Reason(1, `${count} social profile links detected.`);
   }
 
-  return layer1Reason(0, "No social profile links detected.");
+  return layer1Reason(
+    1,
+    "Social profiles could not be verified from the crawled pages.",
+    "unknown",
+  );
 }
 
 export function calcQ18(
@@ -175,7 +213,11 @@ export function calcQ18(
     null;
 
   if (!latest) {
-    return layer1Reason(0, "No detectable modified dates found.");
+    return layer1Reason(
+      1,
+      "Content freshness could not be verified because no reliable dates were captured.",
+      "unknown",
+    );
   }
 
   const ageMs = Date.now() - Date.parse(latest);

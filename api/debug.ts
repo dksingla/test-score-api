@@ -67,16 +67,18 @@ export default async function handler(
       return;
     }
 
-    // ── STEP 2: Layer 1 signals + Claude payload (parallel) ───────────────────
-    const [layer1, debugPayload] = await Promise.all([
-      collectLayer1Signals(
-        url,
-        crawlResult.pages,
-        robots,
-        pageSpeedPromise,
-      ).catch(() => null),
-      Promise.resolve(buildDebugPayload(crawlResult.pages, robots)),
-    ]);
+    // ── STEP 2: Layer 1 signals + exact Claude payload ────────────────────────
+    const layer1 = await collectLayer1Signals(
+      url,
+      crawlResult.pages,
+      robots,
+      pageSpeedPromise,
+    ).catch(() => null);
+    const debugPayload = buildDebugPayload(
+      crawlResult.pages,
+      robots,
+      layer1 ?? undefined,
+    );
 
     // ── STEP 3: Return everything ──────────────────────────────────────────────
     res.status(200).json({
@@ -103,9 +105,11 @@ export default async function handler(
         outboundLinks: p.outboundLinks,
         isJSSite: p.isJSSite,
         ga4Id: p.ga4Id,
+        googleTagId: p.googleTagId,
         gtmId: p.gtmId,
         hasForm: p.hasForm,
         hasEmailForm: p.hasEmailForm,
+        emailCaptureEvidence: p.emailCaptureEvidence,
         ctaTexts: p.ctaTexts,
         wordCount: p.wordCount,
         unorderedListCount: p.unorderedListCount,

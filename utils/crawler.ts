@@ -4,7 +4,7 @@ import {
   fetchCloudflareCrawlResult,
   isCloudflareChallengeHtml,
 } from "./cloudflareCrawl";
-import { discoverSitemapUrls } from "./layer1";
+import { discoverSitemap } from "./layer1";
 import { parseHTML } from "./parser";
 import { PAGE_TYPE_RULES } from "./pageSelectionRules";
 import { renderWithPlaywright } from "./playwright";
@@ -757,6 +757,7 @@ export async function probeProtection(
 async function fetchLocalArtifact(
   url: string,
   signal: AbortSignal,
+  sitemapLastmod?: string | null,
 ): Promise<PageArtifact> {
   let html: string;
   let lastModified: string | null;
@@ -789,7 +790,7 @@ async function fetchLocalArtifact(
 
     return {
       html: rendered,
-      page: parseHTML(rendered, url),
+      page: parseHTML(rendered, url, { sitemapLastmod }),
       source: "playwright",
     };
   }
@@ -799,6 +800,7 @@ async function fetchLocalArtifact(
   }
   const parsed = parseHTML(html, url, {
     httpLastModified: lastModified,
+    sitemapLastmod,
   });
 
   if (parsed.isJSSite) {
@@ -808,6 +810,7 @@ async function fetchLocalArtifact(
         html: rendered,
         page: parseHTML(rendered, url, {
           httpLastModified: lastModified,
+          sitemapLastmod,
         }),
         source: "playwright",
       };
@@ -915,10 +918,17 @@ export async function crawlPages(
     pageUrlSet.add(homepageCanonical);
   }
 
-  const [homepageLinks, sitemapLinks] = await Promise.all([
+  const [homepageLinks, sitemapResult] = await Promise.all([
     Promise.resolve(extractSameDomainLinks(homepageArtifact.html, baseUrl)),
-    discoverSitemapUrls(baseUrl),
+    discoverSitemap(baseUrl),
   ]);
+  const sitemapLinks = sitemapResult.discoveredPageUrls;
+  const sitemapLastmods = new Map(
+    Object.entries(sitemapResult.urlLastmods).map(([url, lastmod]) => [
+      canonicalizeUrl(url),
+      lastmod,
+    ]),
+  );
 
   const candidates = mergeCandidateLists(baseUrl, homepageLinks, sitemapLinks);
   const { coreUrls, fillUrls } = buildPlannedUrlOrder(
@@ -954,7 +964,11 @@ export async function crawlPages(
         canonical,
         (async () => {
           try {
-            const artifact = await fetchLocalArtifact(url, signal);
+            const artifact = await fetchLocalArtifact(
+              url,
+              signal,
+              sitemapLastmods.get(canonical) ?? null,
+            );
             artifacts.set(canonical, artifact);
             return artifact;
           } catch (err) {

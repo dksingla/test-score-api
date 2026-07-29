@@ -29,10 +29,12 @@ export interface PageData {
   // ── Scoring signals ───────────────────────────────────────────────────────
   isJSSite: boolean;
   ga4Id: string | null;
+  googleTagId: string | null;
   gtmId: string | null;
   businessName: string;
   hasForm: boolean;
   hasEmailForm: boolean;
+  emailCaptureEvidence: string[];
   ctaTexts: string[];
   wordCount: number;
   unorderedListCount: number;

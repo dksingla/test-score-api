@@ -47,10 +47,17 @@ const CLAUDE_QUESTION_IDS = [
 ] as const;
 
 type ClaudeQuestionId = (typeof CLAUDE_QUESTION_IDS)[number];
+type EvidenceStatus = "verified" | "unknown";
+
+interface QuestionEvidence {
+  status: EvidenceStatus;
+  reason: string;
+}
 
 export interface ClaudeScore {
   score: number;
   reasoning: string;
+  evidence_status?: "verified" | "unknown";
 }
 
 export interface PriorityFix {
@@ -94,14 +101,17 @@ const PILLAR_ALIASES: Record<string, string> = {
 };
 
 function normalizePriorityFix(fix: PriorityFix): PriorityFix {
-  const rawPillar = typeof fix.pillar === "string" ? fix.pillar.trim().toLowerCase() : "";
+  const questionRef = fix.question_ref.trim().toLowerCase();
+  const rawPillar =
+    typeof fix.pillar === "string" ? fix.pillar.trim().toLowerCase() : "";
   const canonicalPillar =
-    QUESTION_TO_PILLAR[fix.question_ref] ??
+    QUESTION_TO_PILLAR[questionRef] ??
     PILLAR_ALIASES[rawPillar] ??
     rawPillar;
 
   return {
     ...fix,
+    question_ref: questionRef,
     pillar: canonicalPillar || "unknown",
   };
 }
@@ -130,6 +140,7 @@ interface TrimmedPage {
   cta_texts: string[];
   has_form: boolean;
   has_email_form: boolean;
+  email_capture_evidence: string[];
   word_count: number;
   list_count: number;
   table_count: number;
@@ -144,13 +155,14 @@ interface Payload {
   layer1_signals: {
     schemas_detected: string[];
     social_profiles: string[];
-    ga4_detected: boolean;
-    gtm_detected: boolean;
+    ga4_detected: boolean | null;
+    google_tag_detected: boolean | null;
+    gtm_detected: boolean | null;
     pagespeed_mobile: number | null;
-    forms_detected: number;
-    forms_with_email: number;
-    blog_posts_last_60_days: number;
-    case_study_count: number;
+    forms_detected: number | null;
+    forms_with_email: number | null;
+    blog_posts_last_60_days: number | null;
+    case_study_count: number | null;
     person_schema_on_about: boolean;
     review_schema_present: boolean;
     q2_score: number;
@@ -158,6 +170,7 @@ interface Payload {
     q17_score: number;
     q18_score: number;
   };
+  question_evidence: Record<string, QuestionEvidence>;
   site_summary: {
     business_names: string[];
     unique_h1s: string[];
@@ -174,6 +187,7 @@ interface Payload {
     contact: TrimmedPage | null;
     blog_sample: TrimmedPage | null;
     case_studies: TrimmedPage | null;
+    case_study_samples: TrimmedPage[];
     testimonials: TrimmedPage | null;
     faq: TrimmedPage | null;
   };
@@ -274,6 +288,7 @@ function pickBestPages(pages: PageData[]) {
     .filter((page) =>
       BLOG_REGEX.test([page.url, page.title, ...page.h1Tags].join(" ")),
     )
+    .filter(isLikelyBlogDetailPage)
     .sort((a, b) => {
       const aDate = a.dateModified ?? "";
       const bDate = b.dateModified ?? "";
@@ -281,29 +296,81 @@ function pickBestPages(pages: PageData[]) {
       return b.wordCount - a.wordCount;
     });
 
+  const caseStudyCandidates = [...pages]
+    .filter((page) =>
+      CASE_STUDY_REGEX.test(
+        [page.url, page.title, ...page.h1Tags].join(" "),
+      ),
+    )
+    .sort(sortFn);
+  const caseStudyDetails = caseStudyCandidates
+    .filter(isLikelyCaseStudyDetailPage)
+    .sort((a, b) => b.wordCount - a.wordCount);
+
   return {
     homepage,
     about: findBest(ABOUT_REGEX),
     services: findBest(SERVICES_REGEX),
     contact: findBest(CONTACT_REGEX),
     blogSample: recentBlogs[0] ?? null,
-    caseStudies: findBest(CASE_STUDY_REGEX),
+    caseStudies: caseStudyDetails[0] ?? caseStudyCandidates[0] ?? null,
+    caseStudyDetails,
     testimonials: findBest(TESTIMONIAL_REGEX),
     faq: findBest(FAQ_REGEX),
-    caseStudyCount: pages.filter((page) =>
-      CASE_STUDY_REGEX.test([page.url, page.title, ...page.h1Tags].join(" ")),
-    ).length,
+    caseStudyCount: caseStudyDetails.length,
     blogPostsLast60Days: recentBlogs.filter((page) =>
       isRecentWithinDays(page.dateModified, 60),
     ).length,
   };
 }
 
+function isLikelyBlogDetailPage(page: PageData): boolean {
+  try {
+    const path = new URL(page.url).pathname.toLowerCase().replace(/\/$/, "");
+    if (
+      /^\/(?:blog|blogs|articles|insights|resources|news|latest-news)\/[^/]+/.test(
+        path,
+      )
+    ) {
+      return true;
+    }
+
+    return extractSchemaTypes(page).some((type) =>
+      /^(?:article|blogposting|newsarticle)$/i.test(type),
+    );
+  } catch {
+    return false;
+  }
+}
+
+function isLikelyCaseStudyDetailPage(page: PageData): boolean {
+  try {
+    const path = new URL(page.url).pathname.toLowerCase().replace(/\/$/, "");
+    if (
+      /^\/(?:case-studies|case-study|success-stories|success-story|results|portfolio|work)\/[^/]+/.test(
+        path,
+      )
+    ) {
+      return true;
+    }
+
+    return (
+      /\bcase study\b/i.test([page.title, ...page.h1Tags].join(" ")) &&
+      !/^\/(?:case-studies|case-study|success-stories|success-story|results|portfolio|work)$/.test(
+        path,
+      )
+    );
+  } catch {
+    return false;
+  }
+}
+
 function isRecentWithinDays(value: string | null, days: number): boolean {
   if (!value) return false;
   const parsed = Date.parse(value);
   if (Number.isNaN(parsed)) return false;
-  return Date.now() - parsed <= days * 24 * 60 * 60 * 1000;
+  const ageMs = Date.now() - parsed;
+  return ageMs >= 0 && ageMs <= days * 24 * 60 * 60 * 1000;
 }
 
 function trimPage(page: PageData | null, maxWords: number): TrimmedPage | null {
@@ -320,6 +387,7 @@ function trimPage(page: PageData | null, maxWords: number): TrimmedPage | null {
     cta_texts: page.ctaTexts.slice(0, 8),
     has_form: page.hasForm,
     has_email_form: page.hasEmailForm,
+    email_capture_evidence: page.emailCaptureEvidence,
     word_count: page.wordCount,
     list_count: page.unorderedListCount + page.orderedListCount,
     table_count: page.tableCount,
@@ -385,27 +453,178 @@ function buildPayload(
   const contact = trimPage(selected.contact, 1500);
   const blogSample = trimPage(selected.blogSample, 2000);
   const caseStudies = trimPage(selected.caseStudies, 1500);
+  const caseStudySamples = selected.caseStudyDetails
+    .slice(0, 3)
+    .map((page) => trimPage(page, 1500))
+    .filter((page): page is TrimmedPage => Boolean(page));
   const testimonials = trimPage(selected.testimonials, 1500);
   const faq = trimPage(selected.faq, 1500);
 
   const schemaTypes = [
     ...new Set(pages.flatMap((page) => extractSchemaTypes(page))),
   ].slice(0, 40);
+  const emailCapturePages = pages.filter((page) => page.hasEmailForm);
+  const emailSequenceEvidence = emailCapturePages.some((page) =>
+    /\b(?:email sequence|email series|nurture sequence|nurture emails?|email course|check your (?:email|inbox)|sent to your inbox|weekly newsletter|daily emails?)\b/i.test(
+      page.bodyText,
+    ),
+  );
+  const leadMagnetEvidence = emailCapturePages.some(
+    (page) =>
+      page.ctaTexts.some((cta) =>
+        /\b(?:free|download|guide|ebook|trial|demo|assessment|quiz)\b/i.test(
+          cta,
+        ),
+      ) ||
+      /\b(?:free (?:guide|ebook|assessment|quiz)|download (?:the|your|my|our)|lead magnet)\b/i.test(
+        page.bodyText,
+      ),
+  );
+  const hasRecentBlogEvidence = selected.blogPostsLast60Days > 0;
+  const hasCaseStudyNarrativeCoverage = caseStudySamples.length >= 2;
+  const hasSecondaryContent = Boolean(
+    selected.about || selected.services || selected.blogSample,
+  );
+  const q3EvidenceStatus = q3.evidence_status ?? "verified";
+  const q17EvidenceStatus = q17.evidence_status ?? "verified";
+  const q18EvidenceStatus = q18.evidence_status ?? "verified";
+  const questionEvidence: Record<string, QuestionEvidence> = {
+    q1: {
+      status: selected.homepage && hasSecondaryContent ? "verified" : "unknown",
+      reason:
+        selected.homepage && hasSecondaryContent
+          ? "Homepage and supporting key-page content were captured."
+          : "Enough key-page content was not captured to verify this signal.",
+    },
+    q2: {
+      status: q2.evidence_status ?? "verified",
+      reason:
+        q2.evidence_status === "unknown"
+          ? "One or more technical checks were unavailable, so failure was not verified."
+          : "The required technical checks completed.",
+    },
+    q3: {
+      status: q3EvidenceStatus,
+      reason:
+        q3EvidenceStatus === "verified"
+          ? "A supported analytics tag was positively detected."
+          : "No supported analytics tag was visible in the captured markup; absence was not proven.",
+    },
+    q4: {
+      status: hasRecentBlogEvidence ? "verified" : "unknown",
+      reason: hasRecentBlogEvidence
+        ? "At least one recently dated blog post was captured."
+        : "The crawl did not capture enough dated blog inventory to verify publishing inactivity.",
+    },
+    q5: {
+      status: selected.homepage && hasSecondaryContent ? "verified" : "unknown",
+      reason:
+        selected.homepage && hasSecondaryContent
+          ? "Multiple relevant content pages were captured."
+          : "Too little content was captured to assess site-wide buyer-question coverage.",
+    },
+    q6: {
+      status: selected.homepage && hasSecondaryContent ? "verified" : "unknown",
+      reason:
+        selected.homepage && hasSecondaryContent
+          ? "Multiple relevant pages were captured for structure analysis."
+          : "Too little page content was captured to assess site-wide structure.",
+    },
+    q7: {
+      status: selected.testimonials ? "verified" : "unknown",
+      reason: selected.testimonials
+        ? "A testimonials/reviews page was captured."
+        : "A testimonials source was not captured, so absence was not proven.",
+    },
+    q8: {
+      status: hasCaseStudyNarrativeCoverage ? "verified" : "unknown",
+      reason: hasCaseStudyNarrativeCoverage
+        ? "Multiple case-study detail pages were captured for narrative review."
+        : "Multiple case-study narratives were not captured, so completeness or absence cannot be asserted.",
+    },
+    q9: {
+      status: selected.about ? "verified" : "unknown",
+      reason: selected.about
+        ? "An About page was captured."
+        : "An About page was not captured, so absence was not proven.",
+    },
+    q11: {
+      status:
+        selected.homepage && selected.about && selected.services
+          ? "verified"
+          : "unknown",
+      reason:
+        selected.homepage && selected.about && selected.services
+          ? "Homepage, About, and Services pages were captured."
+          : "The required cross-page set was incomplete.",
+    },
+    q13: {
+      status: leadMagnetEvidence ? "verified" : "unknown",
+      reason:
+        leadMagnetEvidence
+          ? "A lead-magnet CTA and native or recognized embedded email capture were positively detected."
+          : "Lead-magnet presence and alignment could not be verified from the captured pages.",
+    },
+    q14: {
+      status: selected.homepage && selected.services ? "verified" : "unknown",
+      reason:
+        selected.homepage && selected.services
+          ? "Homepage and Services CTA evidence was captured."
+          : "Key-page CTA coverage was incomplete.",
+    },
+    q15: {
+      status: emailSequenceEvidence ? "verified" : "unknown",
+      reason: emailSequenceEvidence
+        ? "Public page content explicitly described an email follow-up path."
+        : "A backend email sequence cannot be verified from public form markup alone.",
+    },
+    q16: {
+      status: selected.services || selected.blogSample ? "verified" : "unknown",
+      reason:
+        selected.services || selected.blogSample
+          ? "Substantive service or blog content was captured for citation review."
+          : "Substantive content pages were not captured for citation review.",
+    },
+    q17: {
+      status: q17EvidenceStatus,
+      reason:
+        q17EvidenceStatus === "verified"
+          ? "Social profile links were positively detected."
+          : "No social links were captured, but site-wide absence was not proven.",
+    },
+    q18: {
+      status: q18EvidenceStatus,
+      reason:
+        q18EvidenceStatus === "verified"
+          ? "At least one reliable content date was captured."
+          : "No reliable content dates were captured.",
+    },
+  };
 
   return {
     url: selected.homepage?.url ?? pages[0]?.url ?? "",
     layer1_signals: {
       schemas_detected: schemaTypes,
       social_profiles: siteSummary.social_profiles,
-      ga4_detected: pages.some((page) => Boolean(page.ga4Id)),
-      gtm_detected: pages.some((page) => Boolean(page.gtmId)),
+      ga4_detected: pages.some((page) => Boolean(page.ga4Id)) || null,
+      google_tag_detected:
+        pages.some((page) => Boolean(page.googleTagId)) || null,
+      gtm_detected: pages.some((page) => Boolean(page.gtmId)) || null,
       pagespeed_mobile: layer1?.performance.pageSpeedScore ?? null,
-      forms_detected: pages.filter((page) => page.hasForm).length,
+      forms_detected:
+        pages.some((page) => page.hasForm)
+          ? pages.filter((page) => page.hasForm).length
+          : null,
       forms_with_email:
-        layer1?.conversion.totalFormsWithEmail ??
-        pages.filter((page) => page.hasEmailForm).length,
-      blog_posts_last_60_days: selected.blogPostsLast60Days,
-      case_study_count: selected.caseStudyCount,
+        emailCapturePages.length > 0
+          ? (layer1?.conversion.totalFormsWithEmail ??
+            emailCapturePages.length)
+          : null,
+      blog_posts_last_60_days: hasRecentBlogEvidence
+        ? selected.blogPostsLast60Days
+        : null,
+      case_study_count:
+        selected.caseStudyCount > 0 ? selected.caseStudyCount : null,
       person_schema_on_about: hasPersonSchema(selected.about),
       review_schema_present: pages.some(
         (page) => page.schemaSignals.reviewOrAggregateRating,
@@ -415,6 +634,7 @@ function buildPayload(
       q17_score: q17.score,
       q18_score: q18.score,
     },
+    question_evidence: questionEvidence,
     site_summary: {
       business_names: siteSummary.business_names,
       unique_h1s: siteSummary.unique_h1s,
@@ -431,6 +651,7 @@ function buildPayload(
       contact,
       blog_sample: blogSample,
       case_studies: caseStudies,
+      case_study_samples: caseStudySamples,
       testimonials,
       faq,
     },
@@ -508,7 +729,7 @@ function validateClaudeResponse(parsed: unknown): ClaudeSuccessResponse {
     };
   }
 
-  if (!Array.isArray(obj.priority_fixes) || obj.priority_fixes.length < 3) {
+  if (!Array.isArray(obj.priority_fixes)) {
     throw new Error("Missing priority_fixes");
   }
 
@@ -523,6 +744,58 @@ function validateClaudeResponse(parsed: unknown): ClaudeSuccessResponse {
     business_name: obj.business_name.trim(),
     scores,
     priority_fixes: priorityFixes.slice(0, 5),
+  };
+}
+
+export function applyEvidencePolicy(
+  response: ClaudeSuccessResponse,
+  payload: Payload,
+): ClaudeSuccessResponse {
+  const scores = { ...response.scores };
+
+  for (const questionId of CLAUDE_QUESTION_IDS) {
+    const evidence = payload.question_evidence[questionId];
+    const current = scores[questionId];
+    if (!evidence || !current) continue;
+
+    scores[questionId] =
+      evidence.status === "unknown"
+        ? {
+            score: 1,
+            reasoning: evidence.reason,
+            evidence_status: "unknown",
+          }
+        : {
+            ...current,
+            evidence_status: "verified",
+          };
+  }
+
+  const effectiveScores: Record<string, number> = {
+    ...Object.fromEntries(
+      Object.entries(scores).map(([question, result]) => [
+        question,
+        result.score,
+      ]),
+    ),
+    q2: payload.layer1_signals.q2_score,
+    q3: payload.layer1_signals.q3_score,
+    q17: payload.layer1_signals.q17_score,
+    q18: payload.layer1_signals.q18_score,
+  };
+
+  const priorityFixes = response.priority_fixes.filter((fix) => {
+    const evidence = payload.question_evidence[fix.question_ref];
+    return (
+      evidence?.status === "verified" &&
+      (effectiveScores[fix.question_ref] ?? 2) < 2
+    );
+  });
+
+  return {
+    ...response,
+    scores,
+    priority_fixes: priorityFixes,
   };
 }
 
@@ -599,7 +872,7 @@ async function requestClaudeAnalysis(payload: Payload): Promise<ClaudeResponse> 
 
     try {
       const parsed = JSON.parse(extractJSON(raw));
-      return validateClaudeResponse(parsed);
+      return applyEvidencePolicy(validateClaudeResponse(parsed), payload);
     } catch (error) {
       console.error("[claude] invalid response", {
         attempt,
@@ -616,7 +889,11 @@ async function requestClaudeAnalysis(payload: Payload): Promise<ClaudeResponse> 
   };
 }
 
-export function buildDebugPayload(pages: PageData[], robots: RobotsMeta): {
+export function buildDebugPayload(
+  pages: PageData[],
+  robots: RobotsMeta,
+  layer1?: Layer1Signals,
+): {
   selectedPages: {
     homepage: PageData | undefined;
     about: PageData | null;
@@ -631,7 +908,7 @@ export function buildDebugPayload(pages: PageData[], robots: RobotsMeta): {
   promptText: string;
 } {
   const selected = pickBestPages(pages);
-  const trimmedPayload = buildPayload(pages, robots);
+  const trimmedPayload = buildPayload(pages, robots, layer1);
 
   return {
     selectedPages: {
