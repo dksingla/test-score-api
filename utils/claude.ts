@@ -25,7 +25,7 @@ const SERVICES_REGEX =
   /services|products|solutions|what we do|how we help|service|solution|offerings|capabilities/i;
 const BLOG_REGEX = /blog|articles|insights|resources|news|latest|post|article/i;
 const CASE_STUDY_REGEX =
-  /case studies|case study|success stories|success story|results|portfolio|our work/i;
+  /case[-\s]+stud(?:y|ies)|success[-\s]+stor(?:y|ies)|results|portfolio|our work/i;
 const TESTIMONIAL_REGEX =
   /testimonials|testimonial|reviews|review|what clients say|client stories/i;
 const FAQ_REGEX = /faq|frequently asked|questions/i;
@@ -548,17 +548,25 @@ function buildPayload(
       page.bodyText,
     ),
   );
-  const leadMagnetEvidence = emailCapturePages.some(
-    (page) =>
-      page.ctaTexts.some((cta) =>
-        /\b(?:free|download|guide|ebook|trial|demo|assessment|quiz|scorecard|diagnostic|audit|checklist|template|report)\b/i.test(
-          cta,
-        ),
+  const leadMagnetEvidence = pages.some((page) => {
+    const content = [
+      page.title,
+      page.metaDescription,
+      ...page.h1Tags,
+      ...page.h2Tags,
+      ...page.ctaTexts,
+      page.bodyText,
+    ].join(" ");
+
+    return (
+      /\b(?:get|claim|download|access|take|start|free)\b[\s\S]{0,80}\b(?:visibility score|scorecard|guide|ebook|assessment|quiz|diagnostic|checklist|template|report)\b/i.test(
+        content,
       ) ||
-      /\b(?:guide|ebook|assessment|quiz|scorecard|diagnostic|checklist|template|download (?:the|your|my|our)|lead magnet)\b/i.test(
-        page.bodyText,
-      ),
-  );
+      /\b(?:free|downloadable)\s+(?:guide|ebook|assessment|quiz|scorecard|diagnostic|checklist|template|report)\b/i.test(
+        content,
+      )
+    );
+  });
   const hasRecentBlogEvidence = selected.blogPostsLast60Days > 0;
   const hasCaseStudyNarrativeCoverage = caseStudySamples.length >= 2;
   const hasSecondaryContent = Boolean(
@@ -641,7 +649,7 @@ function buildPayload(
       status: leadMagnetEvidence ? "verified" : "unknown",
       reason:
         leadMagnetEvidence
-          ? "A lead-magnet CTA and native or recognized embedded email capture were positively detected."
+          ? "A visible lead-magnet offer or CTA was positively detected."
           : "Lead-magnet presence and alignment could not be verified from the captured pages.",
     },
     q14: {

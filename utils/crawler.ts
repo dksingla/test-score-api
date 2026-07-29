@@ -371,7 +371,7 @@ function matchesPageType(
   );
 }
 
-function rankCandidate(
+export function rankCandidate(
   candidate: LinkCandidate,
   type?: keyof typeof PAGE_TYPE_RULES,
 ): number {
@@ -383,6 +383,29 @@ function rankCandidate(
 
   if (type && matchesPageType(candidate, type)) {
     score += 120;
+  }
+
+  if (type === "blog") {
+    try {
+      const path = new URL(candidate.url).pathname
+        .toLowerCase()
+        .replace(/\/$/, "");
+      if (
+        /(?:^|\/)(?:blog|articles|insights|news|latest-news)$/.test(path)
+      ) {
+        score += 220;
+      } else if (
+        /\/(?:blog|articles|insights|news|latest-news)\//.test(path)
+      ) {
+        score += 40;
+      }
+
+      if (path === "/resources") {
+        score -= 80;
+      }
+    } catch {
+      // Keep the general candidate score for malformed URLs.
+    }
   }
 
   return score;
@@ -449,11 +472,13 @@ function isNestedChildPage(parentUrl: string, candidateUrl: string): boolean {
   }
 }
 
-function isIndexLikeContentPath(path: string): boolean {
-  return /\/(?:tag|category|author|page\/\d+|feed)(?:\/|$)/i.test(path);
+export function isIndexLikeContentPath(path: string): boolean {
+  return /\/(?:tag|category|author|page\/\d+|feed|cdn-cgi|wp-admin|wp-json)(?:\/|$)/i.test(
+    path,
+  );
 }
 
-function isLikelyBlogPost(
+export function isLikelyBlogPost(
   listingUrl: string,
   candidate: LinkCandidate,
 ): boolean {
@@ -473,8 +498,9 @@ function isLikelyBlogPost(
       return true;
     }
 
-    const segments = path.split("/").filter(Boolean);
-    return segments.length >= 2;
+    return /\/(?:blog|blogs|post|posts|article|articles|insight|insights|news)\/[^/]+/i.test(
+      path,
+    );
   } catch {
     return false;
   }
@@ -1105,12 +1131,22 @@ export async function crawlPages(
     pages.forEach((page) => crawledUrlSet.add(canonicalizeUrl(page.url)));
   };
 
-  const blogListingPage = pages.find((page) =>
-    matchesPageType(
-      { url: page.url, anchorText: page.title.toLowerCase() },
-      "blog",
-    ),
-  );
+  const blogListingPage = pages
+    .map((page, order) => ({
+      page,
+      candidate: {
+        url: page.url,
+        anchorText: page.title.toLowerCase(),
+        isNav: false,
+        order,
+      },
+    }))
+    .filter(({ candidate }) => matchesPageType(candidate, "blog"))
+    .sort(
+      (a, b) =>
+        rankCandidate(b.candidate, "blog") -
+        rankCandidate(a.candidate, "blog"),
+    )[0]?.page;
 
   if (!usedCloudflareSeedCrawl && blogListingPage && remainingCapacity() > 0) {
     const blogArtifact = artifacts.get(canonicalizeUrl(blogListingPage.url));
