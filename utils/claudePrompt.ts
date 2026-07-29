@@ -24,7 +24,7 @@ You are generating priority_fixes for FireUp AIO's free AI Visibility Scorecard.
 - Never reference question numbers (Q1, Q2, etc.), pillar names, sub-signal counts, or score values in the issue or fix text. Speak about what is actually broken on the site, not how the scoring engine evaluates it.
 
 PRIORITY FIXES — FORMAT
-- Return 0 to 5 items in the priority_fixes array. An empty array is correct when no shortcomings were positively verified.
+- Return one fix for every verified question scoring below 2, up to 5 items. Return an empty array only when no verified question scores below 2.
 - Each item is an object with these exact fields: rank, question_ref, pillar, issue, fix.
 - "rank" is a number 1 to 5 (1 = highest priority).
 - "question_ref" is the question the fix addresses, e.g. "q1", "q2", "q4", "q8", "q17". Valid values: q1, q2, q3, q4, q5, q6, q7, q8, q9, q11, q13, q14, q15, q16, q17, q18.
@@ -34,6 +34,7 @@ PRIORITY FIXES — FORMAT
 - Tie every fix to a specific signal detected on the site (e.g., "your About page does not name a person," "the homepage hero does not say who you help," "no case study found," "testimonials lack outcomes"). No generic or best-practice advice.
 - If a fix cannot be tied to something concrete on the site, do not include it.
 - Only include a fix when question_evidence for its question_ref has status "verified". Never include a fix for status "unknown".
+- Do not omit a verified question scoring below 2 merely because higher-weight unknown questions exist. Unknown questions are not fix candidates.
 
 PRIORITY FIXES — UNIQUENESS
 - Each fix must address a different question_ref. No two fixes in the same response may share a question_ref.

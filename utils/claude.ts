@@ -100,6 +100,85 @@ const PILLAR_ALIASES: Record<string, string> = {
   conversion: "intent",
 };
 
+const PILLAR_FIX_WEIGHTS: Record<string, number> = {
+  foundation: 20,
+  relevance: 20,
+  expertise: 20,
+  intent: 15,
+  unify: 15,
+  performance: 10,
+};
+
+const VERIFIED_FALLBACK_FIXES: Record<
+  string,
+  Pick<PriorityFix, "issue" | "fix">
+> = {
+  q1: {
+    issue: "Clarify key-page messaging",
+    fix: "Make the audience, promised outcome, and next step explicit across the verified key pages that scored below full strength.",
+  },
+  q2: {
+    issue: "Strengthen verified technical gaps",
+    fix: "The completed technical checks found room to improve. Prioritize the failed speed, metadata, schema, sitemap, or crawler-access checks shown in the score.",
+  },
+  q3: {
+    issue: "Complete analytics coverage",
+    fix: "The verified analytics check found incomplete tracking. Configure a supported Google tag or Tag Manager container across the site.",
+  },
+  q4: {
+    issue: "Strengthen publishing consistency",
+    fix: "The verified content sample scored below full strength. Improve publishing cadence and make each article more substantive.",
+  },
+  q5: {
+    issue: "Answer more buyer questions",
+    fix: "Strengthen the verified content with direct answers to the questions prospects ask before choosing your service.",
+  },
+  q6: {
+    issue: "Improve content structure",
+    fix: "Make the verified pages easier to scan with descriptive headings, answer-first sections, lists, and other useful structure.",
+  },
+  q7: {
+    issue: "Strengthen testimonial proof",
+    fix: "Improve the verified testimonials with named sources, specific outcomes, and measurable details that make the results credible.",
+  },
+  q8: {
+    issue: "Strengthen case study narratives",
+    fix: "Improve the verified case studies by making each client problem, your process, and the measurable result easy to identify.",
+  },
+  q9: {
+    issue: "Strengthen visible expertise",
+    fix: "Improve the verified About content with specific credentials, experience, and a clear point of view.",
+  },
+  q11: {
+    issue: "Align positioning across pages",
+    fix: "Make the verified pages use a consistent business name, audience, offer, and core positioning.",
+  },
+  q13: {
+    issue: "Clarify lead magnet alignment",
+    fix: "A lead magnet was verified. Make its connection to your primary service and intended next step immediately clear.",
+  },
+  q14: {
+    issue: "Clarify primary calls to action",
+    fix: "Give each verified key page one clear, specific primary action that matches the page purpose.",
+  },
+  q15: {
+    issue: "Strengthen email follow-up",
+    fix: "The verified email path scored below full strength. Clarify what subscribers receive and how the follow-up supports the main offer.",
+  },
+  q16: {
+    issue: "Add stronger supporting evidence",
+    fix: "Strengthen the verified content with reputable citations, substantive data, or attributed expert quotations.",
+  },
+  q17: {
+    issue: "Strengthen social profile coverage",
+    fix: "Expand the verified social links and keep business identity and positioning consistent across active profiles.",
+  },
+  q18: {
+    issue: "Refresh visible content",
+    fix: "The verified freshness signal is below full strength. Update important pages and publish current, substantive material.",
+  },
+};
+
 function normalizePriorityFix(fix: PriorityFix): PriorityFix {
   const questionRef = fix.question_ref.trim().toLowerCase();
   const rawPillar =
@@ -472,11 +551,11 @@ function buildPayload(
   const leadMagnetEvidence = emailCapturePages.some(
     (page) =>
       page.ctaTexts.some((cta) =>
-        /\b(?:free|download|guide|ebook|trial|demo|assessment|quiz)\b/i.test(
+        /\b(?:free|download|guide|ebook|trial|demo|assessment|quiz|scorecard|diagnostic|audit|checklist|template|report)\b/i.test(
           cta,
         ),
       ) ||
-      /\b(?:free (?:guide|ebook|assessment|quiz)|download (?:the|your|my|our)|lead magnet)\b/i.test(
+      /\b(?:guide|ebook|assessment|quiz|scorecard|diagnostic|checklist|template|download (?:the|your|my|our)|lead magnet)\b/i.test(
         page.bodyText,
       ),
   );
@@ -784,13 +863,52 @@ export function applyEvidencePolicy(
     q18: payload.layer1_signals.q18_score,
   };
 
-  const priorityFixes = response.priority_fixes.filter((fix) => {
-    const evidence = payload.question_evidence[fix.question_ref];
-    return (
-      evidence?.status === "verified" &&
-      (effectiveScores[fix.question_ref] ?? 2) < 2
-    );
-  });
+  const eligibleFixRefs = Object.entries(effectiveScores)
+    .filter(([questionRef, score]) => {
+      const evidence = payload.question_evidence[questionRef];
+      return evidence?.status === "verified" && score < 2;
+    })
+    .sort(([questionA, scoreA], [questionB, scoreB]) => {
+      const pillarA = QUESTION_TO_PILLAR[questionA] ?? "unknown";
+      const pillarB = QUESTION_TO_PILLAR[questionB] ?? "unknown";
+      const impactA = (2 - scoreA) * (PILLAR_FIX_WEIGHTS[pillarA] ?? 0);
+      const impactB = (2 - scoreB) * (PILLAR_FIX_WEIGHTS[pillarB] ?? 0);
+      return impactB - impactA;
+    })
+    .map(([questionRef]) => questionRef);
+
+  const proposedFixesByQuestion = new Map<string, PriorityFix>();
+  for (const fix of response.priority_fixes) {
+    if (
+      eligibleFixRefs.includes(fix.question_ref) &&
+      !proposedFixesByQuestion.has(fix.question_ref)
+    ) {
+      proposedFixesByQuestion.set(fix.question_ref, fix);
+    }
+  }
+
+  const priorityFixes = eligibleFixRefs
+    .map((questionRef) => {
+      const proposed = proposedFixesByQuestion.get(questionRef);
+      if (proposed) return proposed;
+
+      const fallback = VERIFIED_FALLBACK_FIXES[questionRef];
+      if (!fallback) return null;
+
+      return {
+        rank: 0,
+        question_ref: questionRef,
+        pillar: QUESTION_TO_PILLAR[questionRef] ?? "unknown",
+        ...fallback,
+      };
+    })
+    .filter((fix): fix is PriorityFix => Boolean(fix))
+    .slice(0, 5)
+    .map((fix, index) => ({
+      ...fix,
+      rank: index + 1,
+      pillar: QUESTION_TO_PILLAR[fix.question_ref] ?? fix.pillar,
+    }));
 
   return {
     ...response,
@@ -872,7 +990,21 @@ async function requestClaudeAnalysis(payload: Payload): Promise<ClaudeResponse> 
 
     try {
       const parsed = JSON.parse(extractJSON(raw));
-      return applyEvidencePolicy(validateClaudeResponse(parsed), payload);
+      const validated = validateClaudeResponse(parsed);
+      const governed = applyEvidencePolicy(validated, payload);
+      console.log("[claude] priority fix evidence policy", {
+        proposed: validated.priority_fixes.map((fix) => fix.question_ref),
+        returned: governed.priority_fixes.map((fix) => fix.question_ref),
+        backfilled: governed.priority_fixes
+          .filter(
+            (fix) =>
+              !validated.priority_fixes.some(
+                (proposed) => proposed.question_ref === fix.question_ref,
+              ),
+          )
+          .map((fix) => fix.question_ref),
+      });
+      return governed;
     } catch (error) {
       console.error("[claude] invalid response", {
         attempt,
