@@ -188,6 +188,7 @@ interface CloudflareLinkCandidate {
   url: string;
   anchorText: string;
   isNav: boolean;
+  isContentCard: boolean;
   order: number;
 }
 
@@ -260,6 +261,12 @@ function extractSameDomainLinks(
         url: resolved.href,
         anchorText: $(el).text().replace(/\s+/g, " ").trim().toLowerCase(),
         isNav: $(el).closest("nav, header").length > 0,
+        isContentCard:
+          $(el)
+            .closest(
+              "article, .e-loop-item, .type-post, [class*='post-card'], [class*='post-item'], [class*='blog-card'], [class*='blog-item'], [class*='article-card'], [class*='article-item']",
+            )
+            .length > 0,
         order: links.length,
       });
     } catch {
@@ -1057,7 +1064,8 @@ export async function fetchCloudflareContentBatchResult(
     : [];
   const candidatePlan = rankedCandidates
     .filter((candidate) => canonicalizeUrl(candidate.url) !== homepageCanonical)
-    .slice(0, CLOUDFLARE_CONTENT_MAX_PAGES - 1);
+    // Reserve up to three slots for adaptive blog-detail sampling.
+    .slice(0, CLOUDFLARE_CONTENT_MAX_PAGES - 4);
   const selectedCandidateUrls = new Set(
     candidatePlan.map((candidate) => canonicalizeUrl(candidate.url)),
   );
@@ -1079,7 +1087,7 @@ export async function fetchCloudflareContentBatchResult(
   console.log("[cloudflare-content][blog] candidate selection", {
     startUrl,
     totalRankedCandidates: rankedCandidates.length,
-    fetchSlots: CLOUDFLARE_CONTENT_MAX_PAGES - 1,
+    fetchSlots: CLOUDFLARE_CONTENT_MAX_PAGES - 4,
     selectedCandidates: candidatePlan.map((candidate) => ({
       url: candidate.url,
       anchorText: candidate.anchorText.slice(0, 120),
@@ -1099,6 +1107,11 @@ export async function fetchCloudflareContentBatchResult(
 
   const pages = homepageResult.page ? [homepageResult.page] : [];
   const errors = homepageResult.error ? [homepageResult.error] : [];
+  const blogHubArtifacts: Array<{
+    page: PageData;
+    html: string;
+    candidate: CloudflareRankedCandidate;
+  }> = [];
 
   for (
     let i = 0;
@@ -1144,6 +1157,13 @@ export async function fetchCloudflareContentBatchResult(
           `${candidate.url} ${candidate.anchorText}`,
         )
       ) {
+        if (result.page && result.html) {
+          blogHubArtifacts.push({
+            page: result.page,
+            html: result.html,
+            candidate,
+          });
+        }
         const discoveredContentLinks = result.html
           ? extractSameDomainLinks(result.html, candidate.url)
               .filter(
@@ -1192,6 +1212,79 @@ export async function fetchCloudflareContentBatchResult(
 
     if (i + CLOUDFLARE_CONTENT_FETCH_CONCURRENCY < candidatePlan.length) {
       await delayMs(CLOUDFLARE_CONTENT_BATCH_DELAY_MS);
+    }
+  }
+
+  const blogHub = blogHubArtifacts.sort(
+    (a, b) =>
+      b.page.blogListingEntries.length - a.page.blogListingEntries.length ||
+      b.candidate.score - a.candidate.score,
+  )[0];
+
+  if (blogHub && pages.length < CLOUDFLARE_CONTENT_MAX_PAGES) {
+    const alreadyFetched = new Set(
+      pages.map((page) => canonicalizeUrl(page.url)),
+    );
+    const newestDatedListingUrl = blogHub.page.blogListingEntries
+      .filter((entry) => !alreadyFetched.has(canonicalizeUrl(entry.url)))
+      .sort((a, b) => b.datePublished.localeCompare(a.datePublished))[0]?.url;
+    const fallbackUrls = extractSameDomainLinks(
+      blogHub.html,
+      blogHub.page.url,
+    )
+      .filter((link) => !link.isNav && link.anchorText.length >= 12)
+      .filter(
+        (link) =>
+          link.isContentCard ||
+          /\/(?:blog|blogs|post|posts|article|articles|insight|insights|news)\//i.test(
+            new URL(link.url).pathname,
+          ),
+      )
+      .filter(
+        (link) =>
+          canonicalizeUrl(link.url) !== canonicalizeUrl(blogHub.page.url) &&
+          !alreadyFetched.has(canonicalizeUrl(link.url)),
+      )
+      .filter((link) => {
+        try {
+          const path = new URL(link.url).pathname;
+          return !/\/(?:tag|category|author|page|feed|wp-json|wp-admin)(?:\/|$)/i.test(
+            path,
+          );
+        } catch {
+          return false;
+        }
+      })
+      .filter((link) => detectPriorityType(link) === null)
+      .sort((a, b) => rankCandidate(b) - rankCandidate(a))
+      .map((link) => link.url);
+    const availableSlots = CLOUDFLARE_CONTENT_MAX_PAGES - pages.length;
+    const adaptiveUrls = (
+      newestDatedListingUrl ? [newestDatedListingUrl] : fallbackUrls
+    ).slice(0, Math.min(newestDatedListingUrl ? 1 : 3, availableSlots));
+
+    console.log("[cloudflare-content][blog] adaptive date strategy", {
+      listingUrl: blogHub.page.url,
+      strategy: newestDatedListingUrl
+        ? "listing_dates"
+        : "detail_page_dates",
+      datedListingEntries: blogHub.page.blogListingEntries.slice(0, 20),
+      detailFetchCount: adaptiveUrls.length,
+      detailUrls: adaptiveUrls,
+    });
+
+    for (const url of adaptiveUrls) {
+      const result = await fetchCandidateWithRetries(url, signal);
+      if (result.page) {
+        const canonical = canonicalizeUrl(result.page.url);
+        if (!alreadyFetched.has(canonical)) {
+          pages.push(result.page);
+          alreadyFetched.add(canonical);
+        }
+      }
+      if (result.error) {
+        errors.push({ ...result.error, url });
+      }
     }
   }
 

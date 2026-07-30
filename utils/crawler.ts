@@ -30,6 +30,7 @@ interface LinkCandidate {
   url: string;
   anchorText: string;
   isNav: boolean;
+  isContentCard?: boolean;
   order: number;
 }
 
@@ -322,6 +323,12 @@ function extractSameDomainLinks(
         url: resolved.href,
         anchorText: $(el).text().replace(/\s+/g, " ").trim().toLowerCase(),
         isNav: $(el).closest("nav, header").length > 0,
+        isContentCard:
+          $(el)
+            .closest(
+              "article, .e-loop-item, .type-post, [class*='post-card'], [class*='post-item'], [class*='blog-card'], [class*='blog-item'], [class*='article-card'], [class*='article-item']",
+            )
+            .length > 0,
         order: links.length,
       });
     } catch {
@@ -495,6 +502,7 @@ interface BlogCandidateDecision {
   accepted: boolean;
   reason:
     | "nested_under_blog_hub"
+    | "content_card"
     | "date_in_anchor"
     | "article_path"
     | "same_as_listing"
@@ -523,6 +531,9 @@ function classifyBlogPostCandidate(
 
     if (path.startsWith(`${listingPath}/`)) {
       return { accepted: true, reason: "nested_under_blog_hub" };
+    }
+    if (candidate.isContentCard && candidate.anchorText.length >= 4) {
+      return { accepted: true, reason: "content_card" };
     }
     if (
       /\b(20\d{2}|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\b/i.test(
@@ -1263,14 +1274,31 @@ export async function crawlPages(
           .slice(0, 15),
       });
 
-      const blogPostUrls = collectHubDetailUrls({
-        html: blogArtifact.html,
+      const newestDatedListingUrl = blogListingPage.blogListingEntries
+        .filter((entry) => !crawledUrlSet.has(canonicalizeUrl(entry.url)))
+        .filter((entry) => !failedUrlSet.has(canonicalizeUrl(entry.url)))
+        .sort((a, b) => b.datePublished.localeCompare(a.datePublished))[0]?.url;
+      const discoveryStrategy = newestDatedListingUrl
+        ? "listing_dates"
+        : "detail_page_dates";
+      const blogPostUrls = newestDatedListingUrl
+        ? [newestDatedListingUrl].slice(0, remainingCapacity())
+        : collectHubDetailUrls({
+            html: blogArtifact.html,
+            listingUrl: blogListingPage.url,
+            maxCount: Math.min(3, remainingCapacity()),
+            crawledUrlSet,
+            failedUrlSet,
+            isDetailCandidate: isLikelyBlogPost,
+            rankDetailCandidate: rankBlogDetailCandidate,
+          });
+
+      console.log("[crawl][blog] adaptive date strategy", {
         listingUrl: blogListingPage.url,
-        maxCount: Math.min(3, remainingCapacity()),
-        crawledUrlSet,
-        failedUrlSet,
-        isDetailCandidate: isLikelyBlogPost,
-        rankDetailCandidate: rankBlogDetailCandidate,
+        strategy: discoveryStrategy,
+        datedListingEntries: blogListingPage.blogListingEntries.slice(0, 20),
+        detailFetchCount: blogPostUrls.length,
+        detailUrls: blogPostUrls,
       });
 
       if (blogPostUrls.length > 0) {

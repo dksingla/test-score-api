@@ -226,6 +226,7 @@ interface TrimmedPage {
   blockquote_count: number;
   outbound_domains: string[];
   schemas_detected: string[];
+  date_published: string | null;
   date_modified: string | null;
 }
 
@@ -243,6 +244,10 @@ interface Payload {
     email_capture_detected: boolean;
     email_sequence_evidence: boolean;
     blog_posts_last_60_days: number | null;
+    blog_posts_last_90_days: number | null;
+    blog_posts_last_12_months: number | null;
+    blog_listing_title: string | null;
+    recent_blog_sample_captured: boolean;
     case_study_count: number | null;
     person_schema_on_about: boolean;
     review_schema_present: boolean;
@@ -266,6 +271,7 @@ interface Payload {
     about: TrimmedPage | null;
     services: TrimmedPage | null;
     contact: TrimmedPage | null;
+    blog_listing: TrimmedPage | null;
     blog_sample: TrimmedPage | null;
     case_studies: TrimmedPage | null;
     case_study_samples: TrimmedPage[];
@@ -365,14 +371,66 @@ function pickBestPages(pages: PageData[]) {
       )
       .sort(sortFn)[0] ?? null;
 
+  const listingEntryUrls = new Set(
+    pages
+      .flatMap((page) => page.blogListingEntries)
+      .map((entry) => entry.url.replace(/\/+$/, "")),
+  );
   const recentBlogs = [...pages]
-    .filter(isLikelyBlogDetailPage)
+    .filter(
+      (page) =>
+        isLikelyBlogDetailPage(page) ||
+        listingEntryUrls.has(page.url.replace(/\/+$/, "")),
+    )
     .sort((a, b) => {
       const aDate = a.dateModified ?? "";
       const bDate = b.dateModified ?? "";
       if (aDate !== bDate) return bDate.localeCompare(aDate);
       return b.wordCount - a.wordCount;
     });
+  const blogListing =
+    [...pages]
+      .filter((page) => page.blogListingEntries.length > 0)
+      .sort(
+        (a, b) =>
+          b.blogListingEntries.length - a.blogListingEntries.length ||
+          sortFn(a, b),
+      )[0] ??
+    findBest(BLOG_REGEX);
+  const datedBlogInventory = new Map<
+    string,
+    { url: string; title: string; datePublished: string }
+  >();
+
+  for (const entry of pages.flatMap((page) => page.blogListingEntries)) {
+    const key = entry.url.replace(/\/+$/, "");
+    const existing = datedBlogInventory.get(key);
+    if (!existing || entry.datePublished > existing.datePublished) {
+      datedBlogInventory.set(key, entry);
+    }
+  }
+  for (const page of recentBlogs) {
+    const publishedDate = page.datePublished ?? page.dateModified;
+    if (!publishedDate) continue;
+    const key = page.url.replace(/\/+$/, "");
+    if (!datedBlogInventory.has(key)) {
+      datedBlogInventory.set(key, {
+        url: page.url,
+        title: page.title,
+        datePublished: publishedDate,
+      });
+    }
+  }
+  const blogInventory = [...datedBlogInventory.values()].sort((a, b) =>
+    b.datePublished.localeCompare(a.datePublished),
+  );
+  const countRecentInventory = (days: number) =>
+    blogInventory.filter((entry) =>
+      isRecentWithinDays(entry.datePublished, days),
+    ).length;
+  const blogPostsLast60Days = countRecentInventory(60);
+  const blogPostsLast90Days = countRecentInventory(90);
+  const blogPostsLast12Months = countRecentInventory(365);
 
   const caseStudyCandidates = [...pages]
     .filter((page) =>
@@ -404,15 +462,12 @@ function pickBestPages(pages: PageData[]) {
       articleSchemaMatched: evidence.articleSchemaMatched,
       schemaTypes: evidence.schemaTypes,
       dateModified: page.dateModified,
+      datePublished: page.datePublished,
       ageDays,
       within60Days: isRecentWithinDays(page.dateModified, 60),
       wordCount: page.wordCount,
     };
   });
-  const blogPostsLast60Days = recentBlogs.filter((page) =>
-    isRecentWithinDays(page.dateModified, 60),
-  ).length;
-
   console.log("[claude][q4] blog evidence summary", {
     totalCrawledPages: pages.length,
     acceptedBlogPages: blogDiagnostics.filter((page) => page.accepted),
@@ -426,8 +481,12 @@ function pickBestPages(pages: PageData[]) {
         dateModified: page.dateModified,
       })),
     selectedBlogSample: recentBlogs[0]?.url ?? null,
+    selectedBlogListing: blogListing?.url ?? null,
+    datedListingInventory: blogInventory.slice(0, 30),
     blogPostsLast60Days,
-    q4EvidenceStatus: blogPostsLast60Days > 0 ? "verified" : "unknown",
+    blogPostsLast90Days,
+    blogPostsLast12Months,
+    q4EvidenceStatus: blogInventory.length > 0 ? "verified" : "unknown",
   });
 
   return {
@@ -435,6 +494,7 @@ function pickBestPages(pages: PageData[]) {
     about: findBest(ABOUT_REGEX),
     services: findBest(SERVICES_REGEX),
     contact: findBest(CONTACT_REGEX),
+    blogListing,
     blogSample: recentBlogs[0] ?? null,
     caseStudies: caseStudyDetails[0] ?? caseStudyCandidates[0] ?? null,
     caseStudyDetails,
@@ -442,6 +502,9 @@ function pickBestPages(pages: PageData[]) {
     faq: findBest(FAQ_REGEX),
     caseStudyCount: caseStudyDetails.length,
     blogPostsLast60Days,
+    blogPostsLast90Days,
+    blogPostsLast12Months,
+    hasDatedBlogInventory: blogInventory.length > 0,
   };
 }
 
@@ -488,6 +551,7 @@ function getBlogDetailEvidence(page: PageData): BlogDetailEvidence {
 }
 
 function isLikelyBlogDetailPage(page: PageData): boolean {
+  if (page.blogListingEntries.length >= 2) return false;
   return getBlogDetailEvidence(page).accepted;
 }
 
@@ -542,6 +606,7 @@ function trimPage(page: PageData | null, maxWords: number): TrimmedPage | null {
     blockquote_count: page.blockquoteCount,
     outbound_domains: extractOutboundDomains(page),
     schemas_detected: extractSchemaTypes(page),
+    date_published: page.datePublished,
     date_modified: page.dateModified,
   };
 }
@@ -599,6 +664,7 @@ function buildPayload(
   const about = trimPage(selected.about, 1500);
   const services = trimPage(selected.services, 1500);
   const contact = trimPage(selected.contact, 1500);
+  const blogListing = trimPage(selected.blogListing, 600);
   const blogSample = trimPage(selected.blogSample, 2000);
   const caseStudies = trimPage(selected.caseStudies, 1500);
   const caseStudySamples = selected.caseStudyDetails
@@ -656,7 +722,7 @@ function buildPayload(
       )
     );
   });
-  const hasRecentBlogEvidence = selected.blogPostsLast60Days > 0;
+  const hasBlogCadenceEvidence = selected.hasDatedBlogInventory;
   const hasCaseStudyNarrativeCoverage = caseStudySamples.length >= 2;
   const hasSecondaryContent = Boolean(
     selected.about || selected.services || selected.blogSample,
@@ -687,10 +753,10 @@ function buildPayload(
           : "No supported analytics tag was visible in the captured markup; absence was not proven.",
     },
     q4: {
-      status: hasRecentBlogEvidence ? "verified" : "unknown",
-      reason: hasRecentBlogEvidence
-        ? "At least one recently dated blog post was captured."
-        : "The crawl did not capture enough dated blog inventory to verify publishing inactivity.",
+      status: hasBlogCadenceEvidence ? "verified" : "unknown",
+      reason: hasBlogCadenceEvidence
+        ? "Dated blog inventory was captured from the listing or verified detail pages."
+        : "The crawl did not capture enough dated blog inventory to assess publishing cadence.",
     },
     q5: {
       status: selected.homepage && hasSecondaryContent ? "verified" : "unknown",
@@ -800,9 +866,17 @@ function buildPayload(
           : null,
       email_capture_detected: hasEmailCaptureEvidence,
       email_sequence_evidence: emailSequenceEvidence,
-      blog_posts_last_60_days: hasRecentBlogEvidence
+      blog_posts_last_60_days: hasBlogCadenceEvidence
         ? selected.blogPostsLast60Days
         : null,
+      blog_posts_last_90_days: hasBlogCadenceEvidence
+        ? selected.blogPostsLast90Days
+        : null,
+      blog_posts_last_12_months: hasBlogCadenceEvidence
+        ? selected.blogPostsLast12Months
+        : null,
+      blog_listing_title: selected.blogListing?.title ?? null,
+      recent_blog_sample_captured: Boolean(selected.blogSample),
       case_study_count:
         selected.caseStudyCount > 0 ? selected.caseStudyCount : null,
       person_schema_on_about: hasPersonSchema(selected.about),
@@ -829,6 +903,7 @@ function buildPayload(
       about,
       services,
       contact,
+      blog_listing: blogListing,
       blog_sample: blogSample,
       case_studies: caseStudies,
       case_study_samples: caseStudySamples,
@@ -965,6 +1040,22 @@ export function applyEvidencePolicy(
             "Email capture was detected, but no specific email sequence or nurture path was visible.",
           evidence_status: "verified",
         };
+  }
+
+  const q4Last60Days = payload.layer1_signals.blog_posts_last_60_days;
+  if (
+    payload.question_evidence.q4?.status === "verified" &&
+    scores.q4.score === 2 &&
+    (q4Last60Days === null ||
+      q4Last60Days < 2 ||
+      !payload.layer1_signals.recent_blog_sample_captured)
+  ) {
+    scores.q4 = {
+      score: 1,
+      reasoning:
+        "Dated blog activity was verified, but the evidence did not include both two posts in the last 60 days and a captured substantive sample.",
+      evidence_status: "verified",
+    };
   }
 
   const effectiveScores: Record<string, number> = {
@@ -1148,6 +1239,7 @@ export function buildDebugPayload(
     about: PageData | null;
     services: PageData | null;
     contact: PageData | null;
+    blogListing: PageData | null;
     blogSample: PageData | null;
     caseStudies: PageData | null;
     testimonials: PageData | null;
@@ -1165,6 +1257,7 @@ export function buildDebugPayload(
       about: selected.about,
       services: selected.services,
       contact: selected.contact,
+      blogListing: selected.blogListing,
       blogSample: selected.blogSample,
       caseStudies: selected.caseStudies,
       testimonials: selected.testimonials,

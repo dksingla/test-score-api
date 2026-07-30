@@ -15,6 +15,12 @@ export interface SchemaSignals {
   reviewOrAggregateRating: boolean;
 }
 
+export interface BlogListingEntry {
+  url: string;
+  title: string;
+  datePublished: string;
+}
+
 export interface PageData {
   url: string;
   // ── Core content (Claude prompt inputs) ──────────────────────────────────
@@ -43,7 +49,9 @@ export interface PageData {
   blockquoteCount: number;
   socialProfiles: SocialProfiles;
   schemaSignals: SchemaSignals;
+  datePublished: string | null;
   dateModified: string | null;
+  blogListingEntries: BlogListingEntry[];
 }
 
 export type ErrorType =

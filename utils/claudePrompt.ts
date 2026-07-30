@@ -68,7 +68,7 @@ Score 1: two of three on homepage, or all three on homepage but other key pages 
 Score 0: homepage lacks audience and problem/outcome, or no key pages beyond homepage.
 
 Q4 - Publishes and maintains substantive content.
-Input: nullable blog post count in last 60 days, blog title, and sampled recent post. A null count means the crawl could not verify inventory and must score neutral.
+Input: nullable verified blog-post counts for the last 60 days, 90 days, and 12 months; blog-listing title/content; and one recent detail-page sample when available. Counts may come directly from dated cards on the listing page. Null counts mean the crawl could not verify inventory and must score neutral.
 Judge: 1) publishing consistently, meaning at least one post in last 90 days, 2) sampled post demonstrates depth: 1000+ words, original perspective, detailed guide, or case study.
 Score 2: 2+ posts in last 60 days and substantive sampled post.
 Score 1: at least 1 post in last 90 days, or substantive post with inconsistent cadence.

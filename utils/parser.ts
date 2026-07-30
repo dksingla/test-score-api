@@ -1,5 +1,10 @@
 import * as cheerio from "cheerio";
-import type { PageData, SchemaSignals, SocialProfiles } from "./types";
+import type {
+  BlogListingEntry,
+  PageData,
+  SchemaSignals,
+  SocialProfiles,
+} from "./types";
 
 const GA4_PATTERN = /\bG-[A-Z0-9]{4,}\b/i;
 const GOOGLE_TAG_PATTERN = /\bGT-[A-Z0-9]{4,}\b/i;
@@ -100,7 +105,13 @@ function walkJson(
 }
 
 function coerceIsoDate(value: string): string | null {
-  const t = Date.parse(value);
+  const normalized = value.trim().replace(/(\d)(?:st|nd|rd|th)\b/gi, "$1");
+  const parseValue = /^\d{4}-\d{2}-\d{2}$/.test(normalized)
+    ? `${normalized}T00:00:00.000Z`
+    : VISIBLE_CONTENT_DATE_PATTERN.test(normalized)
+      ? `${normalized} UTC`
+      : normalized;
+  const t = Date.parse(parseValue);
   return Number.isNaN(t) ? null : new Date(t).toISOString();
 }
 
@@ -115,11 +126,101 @@ function pickLatestIsoDate(
   );
 }
 
+const VISIBLE_CONTENT_DATE_PATTERN =
+  /\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+\d{1,2}(?:st|nd|rd|th)?,?\s+20\d{2}\b/i;
+
+function extractBlogListingEntries(
+  $: cheerio.CheerioAPI,
+  pageUrl: string,
+): BlogListingEntry[] {
+  const page = new URL(pageUrl);
+  const pageHost = page.hostname.replace(/^www\./, "");
+  const pageCanonical = pageUrl.replace(/\/+$/, "");
+  const entries = new Map<string, BlogListingEntry>();
+  const cardSelector = [
+    "article",
+    "[class*='elementor-post']",
+    "[class*='post-card']",
+    "[class*='post-item']",
+    "[class*='blog-card']",
+    "[class*='blog-item']",
+    "[class*='article-card']",
+    "[class*='article-item']",
+    ".e-loop-item",
+    ".type-post",
+  ].join(", ");
+
+  $(cardSelector).each((_, element) => {
+    const card = $(element);
+    const cardText = (card.html() ?? "")
+      .replace(/<[^>]+>/g, " ")
+      .replace(/\s+/g, " ");
+    const rawDate =
+      card.find("time[datetime]").first().attr("datetime") ||
+      card.find("[itemprop='datePublished'][content]").first().attr("content") ||
+      cardText.match(VISIBLE_CONTENT_DATE_PATTERN)?.[0];
+    const datePublished = rawDate ? coerceIsoDate(rawDate) : null;
+    if (!datePublished) return;
+
+    const headingLink = card
+      .find("h1 a[href], h2 a[href], h3 a[href], h4 a[href]")
+      .first();
+    const link = headingLink.length > 0 ? headingLink : card.find("a[href]").first();
+    const href = link.attr("href");
+    if (!href) return;
+
+    try {
+      const resolved = new URL(href, pageUrl);
+      const host = resolved.hostname.replace(/^www\./, "");
+      if (host !== pageHost || !["http:", "https:"].includes(resolved.protocol)) {
+        return;
+      }
+      if (
+        /\/(?:tag|category|author|page|feed|wp-json|wp-admin)(?:\/|$)/i.test(
+          resolved.pathname,
+        )
+      ) {
+        return;
+      }
+
+      resolved.hash = "";
+      const canonical = resolved.toString().replace(/\/+$/, "");
+      if (canonical === pageCanonical) return;
+
+      const headingText = card
+        .find("h1, h2, h3, h4")
+        .first()
+        .text()
+        .replace(/\s+/g, " ")
+        .trim();
+      const title = (headingText || link.text()).replace(/\s+/g, " ").trim();
+      if (title.length < 4) return;
+
+      const existing = entries.get(canonical);
+      if (!existing || datePublished > existing.datePublished) {
+        entries.set(canonical, {
+          url: resolved.toString(),
+          title,
+          datePublished,
+        });
+      }
+    } catch {
+      // Ignore malformed card links.
+    }
+  });
+
+  return [...entries.values()].sort((a, b) =>
+    b.datePublished.localeCompare(a.datePublished),
+  );
+}
+
 function extractSchemaSignals(schemas: string[]): {
   schemaSignals: SchemaSignals;
+  datePublished: string | null;
   dateModified: string | null;
 } {
   const detectedTypes = new Set<string>();
+  let latestDatePublished: string | null = null;
   let latestDateModified: string | null = null;
 
   for (const raw of schemas) {
@@ -134,12 +235,16 @@ function extractSchemaSignals(schemas: string[]): {
           }
         });
 
-        for (const rawDate of [obj.dateModified, obj.datePublished]) {
-          if (typeof rawDate === "string") {
-            const iso = coerceIsoDate(rawDate);
-            if (iso && (!latestDateModified || iso > latestDateModified)) {
-              latestDateModified = iso;
-            }
+        if (typeof obj.datePublished === "string") {
+          const iso = coerceIsoDate(obj.datePublished);
+          if (iso && (!latestDatePublished || iso > latestDatePublished)) {
+            latestDatePublished = iso;
+          }
+        }
+        if (typeof obj.dateModified === "string") {
+          const iso = coerceIsoDate(obj.dateModified);
+          if (iso && (!latestDateModified || iso > latestDateModified)) {
+            latestDateModified = iso;
           }
         }
       });
@@ -161,6 +266,7 @@ function extractSchemaSignals(schemas: string[]): {
         (type) => type.includes("review") || type.includes("aggregaterating"),
       ),
     },
+    datePublished: latestDatePublished,
     dateModified: latestDateModified,
   };
 }
@@ -421,8 +527,11 @@ export function parseHTML(
     }
   });
 
-  const { schemaSignals, dateModified: schemaDateModified } =
-    extractSchemaSignals(schemas);
+  const {
+    schemaSignals,
+    datePublished: schemaDatePublished,
+    dateModified: schemaDateModified,
+  } = extractSchemaSignals(schemas);
   const httpLastModified =
     typeof metadata?.httpLastModified === "string"
       ? coerceIsoDate(metadata.httpLastModified)
@@ -434,6 +543,13 @@ export function parseHTML(
   const metaPublished = [
     $("meta[property='article:published_time']").attr("content"),
     $("meta[name='article:published_time']").attr("content"),
+  ]
+    .filter((value): value is string => Boolean(value))
+    .map(coerceIsoDate)
+    .filter((value): value is string => Boolean(value))
+    .sort()
+    .at(-1);
+  const metaModified = [
     $("meta[property='article:modified_time']").attr("content"),
     $("meta[name='article:modified_time']").attr("content"),
   ]
@@ -450,12 +566,17 @@ export function parseHTML(
     .filter((value): value is string => Boolean(value))
     .sort()
     .at(-1);
-  const dateModified = pickLatestIsoDate(
-    schemaDateModified,
-    httpLastModified,
-    sitemapLastmod,
+  const datePublished = pickLatestIsoDate(
+    schemaDatePublished,
     metaPublished,
     articleTime,
+  );
+  const dateModified = pickLatestIsoDate(
+    schemaDateModified,
+    datePublished,
+    httpLastModified,
+    sitemapLastmod,
+    metaModified,
   );
   const wordCount = bodyText ? bodyText.split(/\s+/).filter(Boolean).length : 0;
   const debugSchemaTypes = [
@@ -481,6 +602,7 @@ export function parseHTML(
       ) ?? [],
     ),
   ].slice(0, 20);
+  const blogListingEntries = extractBlogListingEntries($, url);
 
   if (looksLikeBlogContent) {
     console.log("[parser][blog] date evidence", {
@@ -488,12 +610,16 @@ export function parseHTML(
       title,
       schemaTypes: debugSchemaTypes.slice(0, 10),
       schemaDate: schemaDateModified,
+      schemaDatePublished,
       httpLastModified,
       sitemapLastmod,
       metaPublished: metaPublished ?? null,
+      metaModified: metaModified ?? null,
       articleTime: articleTime ?? null,
+      selectedPublishedDate: datePublished,
       selectedDate: dateModified,
       visibleDateTextMatches,
+      blogListingEntries: blogListingEntries.slice(0, 20),
       wordCount,
     });
   }
@@ -532,6 +658,8 @@ export function parseHTML(
       pinterest: [...new Set(socialProfiles.pinterest)],
     },
     schemaSignals,
+    datePublished,
     dateModified,
+    blogListingEntries,
   };
 }

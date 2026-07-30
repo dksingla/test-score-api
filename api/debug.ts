@@ -118,7 +118,9 @@ export default async function handler(
         blockquoteCount: p.blockquoteCount,
         socialProfiles: p.socialProfiles,
         schemaSignals: p.schemaSignals,
+        datePublished: p.datePublished,
         dateModified: p.dateModified,
+        blogListingEntries: p.blogListingEntries,
       })),
 
       // ── Layer 1 technical signals ──────────────────────────────────────────
@@ -131,6 +133,7 @@ export default async function handler(
         aboutUrl: debugPayload.selectedPages.about?.url ?? null,
         servicesUrl: debugPayload.selectedPages.services?.url ?? null,
         contactUrl: debugPayload.selectedPages.contact?.url ?? null,
+        blogListingUrl: debugPayload.selectedPages.blogListing?.url ?? null,
         blogSampleUrl: debugPayload.selectedPages.blogSample?.url ?? null,
         caseStudiesUrl: debugPayload.selectedPages.caseStudies?.url ?? null,
         testimonialsUrl: debugPayload.selectedPages.testimonials?.url ?? null,
