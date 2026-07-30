@@ -383,8 +383,8 @@ function pickBestPages(pages: PageData[]) {
         listingEntryUrls.has(page.url.replace(/\/+$/, "")),
     )
     .sort((a, b) => {
-      const aDate = a.dateModified ?? "";
-      const bDate = b.dateModified ?? "";
+      const aDate = a.datePublished ?? a.dateModified ?? "";
+      const bDate = b.datePublished ?? b.dateModified ?? "";
       if (aDate !== bDate) return bDate.localeCompare(aDate);
       return b.wordCount - a.wordCount;
     });
@@ -444,8 +444,9 @@ function pickBestPages(pages: PageData[]) {
     .sort((a, b) => b.wordCount - a.wordCount);
   const blogDiagnostics = pages.map((page) => {
     const evidence = getBlogDetailEvidence(page);
-    const parsedDate = page.dateModified
-      ? Date.parse(page.dateModified)
+    const effectiveDate = page.datePublished ?? page.dateModified;
+    const parsedDate = effectiveDate
+      ? Date.parse(effectiveDate)
       : Number.NaN;
     const ageDays = Number.isNaN(parsedDate)
       ? null
@@ -464,7 +465,7 @@ function pickBestPages(pages: PageData[]) {
       dateModified: page.dateModified,
       datePublished: page.datePublished,
       ageDays,
-      within60Days: isRecentWithinDays(page.dateModified, 60),
+      within60Days: isRecentWithinDays(effectiveDate, 60),
       wordCount: page.wordCount,
     };
   });

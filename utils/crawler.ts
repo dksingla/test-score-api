@@ -1317,6 +1317,7 @@ export async function crawlPages(
               source: artifact?.source ?? null,
               parsedUrl: page?.url ?? null,
               title: page?.title ?? null,
+              datePublished: page?.datePublished ?? null,
               dateModified: page?.dateModified ?? null,
               wordCount: page?.wordCount ?? null,
               schemaTypes:

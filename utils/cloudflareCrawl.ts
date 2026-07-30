@@ -1194,6 +1194,7 @@ export async function fetchCloudflareContentBatchResult(
           fetched: Boolean(result.page),
           parsedUrl: result.page?.url ?? null,
           title: result.page?.title ?? null,
+          datePublished: result.page?.datePublished ?? null,
           dateModified: result.page?.dateModified ?? null,
           wordCount: result.page?.wordCount ?? null,
           schemaTypes,
