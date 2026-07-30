@@ -365,7 +365,6 @@ function selectTopCandidates(
       seen.add(canonical);
       return true;
     })
-    .slice(0, CLOUDFLARE_CONTENT_MAX_PAGES)
     .map((candidate) => ({
       url: candidate.url,
       anchorText: candidate.anchorText,
@@ -1059,6 +1058,44 @@ export async function fetchCloudflareContentBatchResult(
   const candidatePlan = rankedCandidates
     .filter((candidate) => canonicalizeUrl(candidate.url) !== homepageCanonical)
     .slice(0, CLOUDFLARE_CONTENT_MAX_PAGES - 1);
+  const selectedCandidateUrls = new Set(
+    candidatePlan.map((candidate) => canonicalizeUrl(candidate.url)),
+  );
+  const blogRelatedCandidates = rankedCandidates.filter((candidate) => {
+    let path = "";
+    try {
+      path = new URL(candidate.url).pathname;
+    } catch {
+      // Keep the empty path; anchor text can still explain the classification.
+    }
+    return (
+      candidate.priorityType === "blog" ||
+      /\b(blog|article|insight|news|20\d{2}|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\b/i.test(
+        `${path} ${candidate.anchorText}`,
+      )
+    );
+  });
+
+  console.log("[cloudflare-content][blog] candidate selection", {
+    startUrl,
+    totalRankedCandidates: rankedCandidates.length,
+    fetchSlots: CLOUDFLARE_CONTENT_MAX_PAGES - 1,
+    selectedCandidates: candidatePlan.map((candidate) => ({
+      url: candidate.url,
+      anchorText: candidate.anchorText.slice(0, 120),
+      priorityType: candidate.priorityType,
+      score: candidate.score,
+    })),
+    blogRelatedCandidates: blogRelatedCandidates.slice(0, 30).map((candidate) => ({
+      url: candidate.url,
+      anchorText: candidate.anchorText.slice(0, 120),
+      priorityType: candidate.priorityType,
+      score: candidate.score,
+      selectedForFetch: selectedCandidateUrls.has(
+        canonicalizeUrl(candidate.url),
+      ),
+    })),
+  });
 
   const pages = homepageResult.page ? [homepageResult.page] : [];
   const errors = homepageResult.error ? [homepageResult.error] : [];
@@ -1099,6 +1136,50 @@ export async function fetchCloudflareContentBatchResult(
         if (!pages.some((page) => canonicalizeUrl(page.url) === canonical)) {
           pages.push(result.page);
         }
+      }
+
+      if (
+        candidate.priorityType === "blog" ||
+        /\b(blog|article|insight|news)\b/i.test(
+          `${candidate.url} ${candidate.anchorText}`,
+        )
+      ) {
+        const discoveredContentLinks = result.html
+          ? extractSameDomainLinks(result.html, candidate.url)
+              .filter(
+                (link) =>
+                  !link.isNav &&
+                  canonicalizeUrl(link.url) !== canonicalizeUrl(candidate.url),
+              )
+              .slice(0, 30)
+              .map((link) => ({
+                url: link.url,
+                anchorText: link.anchorText.slice(0, 120),
+              }))
+          : [];
+        const schemaTypes =
+          result.page?.schemas
+            .flatMap((schema) =>
+              [...schema.matchAll(/"@type"\s*:\s*"([^"]+)"/gi)].map(
+                (match) => match[1],
+              ),
+            )
+            .filter((value, index, values) => values.indexOf(value) === index)
+            .slice(0, 10) ?? [];
+
+        console.log("[cloudflare-content][blog] fetched candidate signals", {
+          requestedUrl: candidate.url,
+          priorityType: candidate.priorityType,
+          score: candidate.score,
+          fetched: Boolean(result.page),
+          parsedUrl: result.page?.url ?? null,
+          title: result.page?.title ?? null,
+          dateModified: result.page?.dateModified ?? null,
+          wordCount: result.page?.wordCount ?? null,
+          schemaTypes,
+          discoveredContentLinks,
+          error: result.error?.message ?? null,
+        });
       }
 
       if (result.error) {

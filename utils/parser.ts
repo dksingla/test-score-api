@@ -466,6 +466,13 @@ export function parseHTML(
     /\/(?:blog|blogs|post|posts|article|articles|insight|insights|news)(?:\/|$)/i.test(
       new URL(url).pathname,
     );
+  const visibleDateTextMatches = [
+    ...new Set(
+      bodyText.match(
+        /\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+\d{1,2},?\s+20\d{2}\b/gi,
+      ) ?? [],
+    ),
+  ].slice(0, 20);
 
   if (looksLikeBlogContent) {
     console.log("[parser][blog] date evidence", {
@@ -478,6 +485,7 @@ export function parseHTML(
       metaPublished: metaPublished ?? null,
       articleTime: articleTime ?? null,
       selectedDate: dateModified,
+      visibleDateTextMatches,
       wordCount,
     });
   }
