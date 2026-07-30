@@ -381,17 +381,22 @@ export function parseHTML(
   // ── CTA + form signals ────────────────────────────────────────────────────
   const forms = $("form");
   const emailCaptureEvidence: string[] = [];
-  let hasEmailForm = false;
+  const emailInputs = $(
+    [
+      'input[type="email"]',
+      'input[name*="email" i]',
+      'input[id*="email" i]',
+      'input[autocomplete="email" i]',
+      'input[aria-label*="email" i]',
+      'input[placeholder*="email" i]',
+      'input[placeholder*="@"]',
+    ].join(", "),
+  );
+  let hasEmailForm = emailInputs.length > 0;
 
-  forms.each((_, el) => {
-    const form = $(el);
-    if (
-      form.find('input[type="email"], input[name*="email" i], input[id*="email" i]').length > 0
-    ) {
-      hasEmailForm = true;
-      emailCaptureEvidence.push("native email form");
-    }
-  });
+  if (emailInputs.length > 0) {
+    emailCaptureEvidence.push("native email input");
+  }
 
   for (const { pattern, provider } of EMAIL_CAPTURE_EMBED_PATTERNS) {
     if (pattern.test(html)) {
@@ -403,7 +408,10 @@ export function parseHTML(
   if (uniqueEmailCaptureEvidence.length > 0) {
     hasEmailForm = true;
   }
-  const hasForm = forms.length > 0 || uniqueEmailCaptureEvidence.length > 0;
+  const hasForm =
+    forms.length > 0 ||
+    emailInputs.length > 0 ||
+    uniqueEmailCaptureEvidence.length > 0;
 
   const ctaTexts: string[] = [];
   $("a, button").each((_, el) => {

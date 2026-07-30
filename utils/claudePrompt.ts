@@ -134,8 +134,8 @@ Q15 - Email sequence / follow-up path.
 Input: nullable native/recognized embedded email capture counts, embed evidence, homepage, services, and contact content.
 Judge: evidence of real nurture sequence versus generic contact form.
 Score 2: email capture and mentions of specific sequence or nurture path.
-Score 1: email capture but no clear sequence.
-Score 0: only when complete verified evidence proves there is no email capture or only a contact form with no opt-in. A backend sequence that is not publicly visible is unknown.
+Score 1: a positively detected email input or recognized email-capture embed, including a contact form, but no clear sequence.
+Score 0: only when complete verified evidence proves there is no email capture. If the crawl is incomplete, treat absence as unknown.
 
 Q16 - Content includes citations, data, or direct quotes.
 Input: outbound link list per page, blockquote count per page, body content of homepage, services, blog sample.

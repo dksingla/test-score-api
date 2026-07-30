@@ -51,6 +51,24 @@ export const PAGE_TYPE_RULES = {
     navTexts: ["testimonials", "reviews"],
     slugs: ["/testimonials", "/reviews"],
   },
+  contact: {
+    navTexts: [
+      "contact",
+      "contact us",
+      "get in touch",
+      "book a call",
+      "schedule a call",
+      "discovery call",
+    ],
+    slugs: [
+      "/contact",
+      "/contact-us",
+      "/get-in-touch",
+      "/book-a-call",
+      "/schedule-a-call",
+      "/discovery-call",
+    ],
+  },
 } as const;
 
 export function buildCloudflareIncludePatterns(startUrl: string): string[] {

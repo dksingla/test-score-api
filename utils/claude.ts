@@ -240,6 +240,8 @@ interface Payload {
     pagespeed_mobile: number | null;
     forms_detected: number | null;
     forms_with_email: number | null;
+    email_capture_detected: boolean;
+    email_sequence_evidence: boolean;
     blog_posts_last_60_days: number | null;
     case_study_count: number | null;
     person_schema_on_about: boolean;
@@ -615,6 +617,26 @@ function buildPayload(
       page.bodyText,
     ),
   );
+  const hasEmailCaptureEvidence = emailCapturePages.length > 0;
+
+  console.log("[claude][q15] email evidence summary", {
+    totalCrawledPages: pages.length,
+    emailCapturePageCount: emailCapturePages.length,
+    emailSequenceEvidence,
+    pages: emailCapturePages.map((page) => ({
+      url: page.url,
+      title: page.title,
+      hasForm: page.hasForm,
+      hasEmailForm: page.hasEmailForm,
+      emailCaptureEvidence: page.emailCaptureEvidence,
+    })),
+    q15EvidenceStatus: hasEmailCaptureEvidence ? "verified" : "unknown",
+    deterministicScore: hasEmailCaptureEvidence
+      ? emailSequenceEvidence
+        ? 2
+        : 1
+      : null,
+  });
   const leadMagnetEvidence = pages.some((page) => {
     const content = [
       page.title,
@@ -727,10 +749,12 @@ function buildPayload(
           : "Key-page CTA coverage was incomplete.",
     },
     q15: {
-      status: emailSequenceEvidence ? "verified" : "unknown",
-      reason: emailSequenceEvidence
-        ? "Public page content explicitly described an email follow-up path."
-        : "A backend email sequence cannot be verified from public form markup alone.",
+      status: hasEmailCaptureEvidence ? "verified" : "unknown",
+      reason: hasEmailCaptureEvidence
+        ? emailSequenceEvidence
+          ? "Email capture and a specific public email follow-up path were detected."
+          : "Email capture was positively detected, but no specific nurture sequence was visible."
+        : "No email capture was found in the pages captured by the crawl, so site-wide absence was not proven.",
     },
     q16: {
       status: selected.services || selected.blogSample ? "verified" : "unknown",
@@ -770,10 +794,12 @@ function buildPayload(
           ? pages.filter((page) => page.hasForm).length
           : null,
       forms_with_email:
-        emailCapturePages.length > 0
+        hasEmailCaptureEvidence
           ? (layer1?.conversion.totalFormsWithEmail ??
             emailCapturePages.length)
           : null,
+      email_capture_detected: hasEmailCaptureEvidence,
+      email_sequence_evidence: emailSequenceEvidence,
       blog_posts_last_60_days: hasRecentBlogEvidence
         ? selected.blogPostsLast60Days
         : null,
@@ -923,6 +949,22 @@ export function applyEvidencePolicy(
             ...current,
             evidence_status: "verified",
           };
+  }
+
+  if (payload.layer1_signals.email_capture_detected) {
+    scores.q15 = payload.layer1_signals.email_sequence_evidence
+      ? {
+          score: 2,
+          reasoning:
+            "Email capture and a specific public email follow-up path were detected.",
+          evidence_status: "verified",
+        }
+      : {
+          score: 1,
+          reasoning:
+            "Email capture was detected, but no specific email sequence or nurture path was visible.",
+          evidence_status: "verified",
+        };
   }
 
   const effectiveScores: Record<string, number> = {

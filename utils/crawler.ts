@@ -744,6 +744,7 @@ function buildPlannedUrlOrder(
     selectTopCandidate(filteredCandidates, "blog", selected),
     selectTopCandidate(filteredCandidates, "caseStudies", selected),
     selectTopCandidate(filteredCandidates, "testimonials", selected),
+    selectTopCandidate(filteredCandidates, "contact", selected),
   ].filter((url): url is string => Boolean(url));
 
   coreUrls.forEach((url) => selected.add(url));
