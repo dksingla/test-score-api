@@ -76,11 +76,13 @@ interface CfWrappedContentResponse {
 
 const CHALLENGE_MARKERS = [
   "<title>just a moment",
+  "<title>one moment, please",
+  "verification successful. waiting for",
+  "window.location.reload",
   "challenges.cloudflare.com",
   "cf_chl_opt",
   "enable javascript and cookies to continue",
   "performing security verification",
-  "verification successful. waiting for",
   "this website uses a security service to protect against malicious bots",
   "performance and security by cloudflare",
   "ray id:",
