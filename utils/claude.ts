@@ -364,9 +364,6 @@ function pickBestPages(pages: PageData[]) {
       .sort(sortFn)[0] ?? null;
 
   const recentBlogs = [...pages]
-    .filter((page) =>
-      BLOG_REGEX.test([page.url, page.title, ...page.h1Tags].join(" ")),
-    )
     .filter(isLikelyBlogDetailPage)
     .sort((a, b) => {
       const aDate = a.dateModified ?? "";
@@ -385,6 +382,51 @@ function pickBestPages(pages: PageData[]) {
   const caseStudyDetails = caseStudyCandidates
     .filter(isLikelyCaseStudyDetailPage)
     .sort((a, b) => b.wordCount - a.wordCount);
+  const blogDiagnostics = pages.map((page) => {
+    const evidence = getBlogDetailEvidence(page);
+    const parsedDate = page.dateModified
+      ? Date.parse(page.dateModified)
+      : Number.NaN;
+    const ageDays = Number.isNaN(parsedDate)
+      ? null
+      : Math.round(
+          ((Date.now() - parsedDate) / (24 * 60 * 60 * 1000)) * 10,
+        ) / 10;
+
+    return {
+      url: page.url,
+      title: page.title,
+      accepted: evidence.accepted,
+      reason: evidence.reason,
+      pathMatched: evidence.pathMatched,
+      articleSchemaMatched: evidence.articleSchemaMatched,
+      schemaTypes: evidence.schemaTypes,
+      dateModified: page.dateModified,
+      ageDays,
+      within60Days: isRecentWithinDays(page.dateModified, 60),
+      wordCount: page.wordCount,
+    };
+  });
+  const blogPostsLast60Days = recentBlogs.filter((page) =>
+    isRecentWithinDays(page.dateModified, 60),
+  ).length;
+
+  console.log("[claude][q4] blog evidence summary", {
+    totalCrawledPages: pages.length,
+    acceptedBlogPages: blogDiagnostics.filter((page) => page.accepted),
+    rejectedPages: blogDiagnostics
+      .filter((page) => !page.accepted)
+      .map((page) => ({
+        url: page.url,
+        title: page.title,
+        reason: page.reason,
+        schemaTypes: page.schemaTypes,
+        dateModified: page.dateModified,
+      })),
+    selectedBlogSample: recentBlogs[0]?.url ?? null,
+    blogPostsLast60Days,
+    q4EvidenceStatus: blogPostsLast60Days > 0 ? "verified" : "unknown",
+  });
 
   return {
     homepage,
@@ -397,29 +439,54 @@ function pickBestPages(pages: PageData[]) {
     testimonials: findBest(TESTIMONIAL_REGEX),
     faq: findBest(FAQ_REGEX),
     caseStudyCount: caseStudyDetails.length,
-    blogPostsLast60Days: recentBlogs.filter((page) =>
-      isRecentWithinDays(page.dateModified, 60),
-    ).length,
+    blogPostsLast60Days,
   };
 }
 
-function isLikelyBlogDetailPage(page: PageData): boolean {
+interface BlogDetailEvidence {
+  accepted: boolean;
+  reason: "article_path" | "article_schema" | "no_article_path_or_schema";
+  pathMatched: boolean;
+  articleSchemaMatched: boolean;
+  schemaTypes: string[];
+}
+
+function getBlogDetailEvidence(page: PageData): BlogDetailEvidence {
   try {
     const path = new URL(page.url).pathname.toLowerCase().replace(/\/$/, "");
-    if (
+    const pathMatched =
       /^\/(?:blog|blogs|articles|insights|resources|news|latest-news)\/[^/]+/.test(
         path,
-      )
-    ) {
-      return true;
-    }
-
-    return extractSchemaTypes(page).some((type) =>
+      );
+    const schemaTypes = extractSchemaTypes(page);
+    const articleSchemaMatched = schemaTypes.some((type) =>
       /^(?:article|blogposting|newsarticle)$/i.test(type),
     );
+
+    return {
+      accepted: pathMatched || articleSchemaMatched,
+      reason: pathMatched
+        ? "article_path"
+        : articleSchemaMatched
+          ? "article_schema"
+          : "no_article_path_or_schema",
+      pathMatched,
+      articleSchemaMatched,
+      schemaTypes,
+    };
   } catch {
-    return false;
+    return {
+      accepted: false,
+      reason: "no_article_path_or_schema",
+      pathMatched: false,
+      articleSchemaMatched: false,
+      schemaTypes: extractSchemaTypes(page),
+    };
   }
+}
+
+function isLikelyBlogDetailPage(page: PageData): boolean {
+  return getBlogDetailEvidence(page).accepted;
 }
 
 function isLikelyCaseStudyDetailPage(page: PageData): boolean {

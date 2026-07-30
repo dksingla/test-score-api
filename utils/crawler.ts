@@ -207,13 +207,26 @@ async function fetchHTML(
   for (let attempt = 0; attempt <= 1; attempt++) {
     if (signal.aborted) throw new Error("Global timeout exceeded");
     try {
-      const { data, headers } = await axios.get<string>(url, {
+      const response = await axios.get<string>(url, {
         timeout: REQUEST_TIMEOUT_MS,
         maxContentLength: debugNoLimit ? -1 : DEFAULT_MAX_HTML_BYTES,
         maxRedirects: 5,
         headers: CRAWL_HEADERS,
         signal,
       });
+      const { data, headers } = response;
+      const responseUrl =
+        (
+          response.request as
+            | { res?: { responseUrl?: unknown } }
+            | undefined
+        )?.res?.responseUrl;
+      if (typeof responseUrl === "string" && responseUrl !== url) {
+        console.log("[crawl] redirect followed", {
+          requestedUrl: url,
+          finalUrl: responseUrl,
+        });
+      }
 
       if (!isHtmlContentType(headers["content-type"])) {
         throw new Error(
@@ -478,32 +491,65 @@ export function isIndexLikeContentPath(path: string): boolean {
   );
 }
 
-export function isLikelyBlogPost(
+interface BlogCandidateDecision {
+  accepted: boolean;
+  reason:
+    | "nested_under_blog_hub"
+    | "date_in_anchor"
+    | "article_path"
+    | "same_as_listing"
+    | "navigation_link"
+    | "system_or_index_path"
+    | "no_blog_detail_signal"
+    | "invalid_url";
+}
+
+function classifyBlogPostCandidate(
   listingUrl: string,
   candidate: LinkCandidate,
-): boolean {
+): BlogCandidateDecision {
   try {
     const listingPath = new URL(listingUrl).pathname.replace(/\/$/, "");
     const path = new URL(candidate.url).pathname.replace(/\/$/, "");
-    if (path === listingPath) return false;
-    if (candidate.isNav) return false;
-    if (isIndexLikeContentPath(path)) return false;
+    if (path === listingPath) {
+      return { accepted: false, reason: "same_as_listing" };
+    }
+    if (candidate.isNav) {
+      return { accepted: false, reason: "navigation_link" };
+    }
+    if (isIndexLikeContentPath(path)) {
+      return { accepted: false, reason: "system_or_index_path" };
+    }
 
+    if (path.startsWith(`${listingPath}/`)) {
+      return { accepted: true, reason: "nested_under_blog_hub" };
+    }
     if (
-      path.startsWith(`${listingPath}/`) ||
       /\b(20\d{2}|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\b/i.test(
         candidate.anchorText,
       )
     ) {
-      return true;
+      return { accepted: true, reason: "date_in_anchor" };
+    }
+    if (
+      /\/(?:blog|blogs|post|posts|article|articles|insight|insights|news)\/[^/]+/i.test(
+        path,
+      )
+    ) {
+      return { accepted: true, reason: "article_path" };
     }
 
-    return /\/(?:blog|blogs|post|posts|article|articles|insight|insights|news)\/[^/]+/i.test(
-      path,
-    );
+    return { accepted: false, reason: "no_blog_detail_signal" };
   } catch {
-    return false;
+    return { accepted: false, reason: "invalid_url" };
   }
+}
+
+export function isLikelyBlogPost(
+  listingUrl: string,
+  candidate: LinkCandidate,
+): boolean {
+  return classifyBlogPostCandidate(listingUrl, candidate).accepted;
 }
 
 function isLikelyCaseStudyDetail(
@@ -1148,9 +1194,74 @@ export async function crawlPages(
         rankCandidate(a.candidate, "blog"),
     )[0]?.page;
 
+  console.log("[crawl][blog] listing selection", {
+    selectedUrl: blogListingPage?.url ?? null,
+    candidates: pages
+      .map((page, order) => ({
+        url: page.url,
+        title: page.title,
+        matchesBlogType: matchesPageType(
+          {
+            url: page.url,
+            anchorText: page.title.toLowerCase(),
+          },
+          "blog",
+        ),
+        rank: rankCandidate(
+          {
+            url: page.url,
+            anchorText: page.title.toLowerCase(),
+            isNav: false,
+            order,
+          },
+          "blog",
+        ),
+        artifactAvailable: artifacts.has(canonicalizeUrl(page.url)),
+      }))
+      .filter((candidate) => candidate.matchesBlogType)
+      .sort((a, b) => b.rank - a.rank)
+      .slice(0, 10),
+  });
+
   if (!usedCloudflareSeedCrawl && blogListingPage && remainingCapacity() > 0) {
     const blogArtifact = artifacts.get(canonicalizeUrl(blogListingPage.url));
     if (blogArtifact) {
+      const discoveredBlogLinks = extractSameDomainLinks(
+        blogArtifact.html,
+        blogListingPage.url,
+      ).map((candidate) => {
+        const decision = classifyBlogPostCandidate(
+          blogListingPage.url,
+          candidate,
+        );
+        return {
+          url: candidate.url,
+          anchorText: candidate.anchorText.slice(0, 120),
+          isNav: candidate.isNav,
+          accepted: decision.accepted,
+          reason: decision.reason,
+          rank: decision.accepted
+            ? rankBlogDetailCandidate(blogListingPage.url, candidate)
+            : null,
+        };
+      });
+
+      console.log("[crawl][blog] hub link classification", {
+        listingUrl: blogListingPage.url,
+        totalLinks: discoveredBlogLinks.length,
+        acceptedCount: discoveredBlogLinks.filter((item) => item.accepted)
+          .length,
+        rejectedCount: discoveredBlogLinks.filter((item) => !item.accepted)
+          .length,
+        accepted: discoveredBlogLinks
+          .filter((item) => item.accepted)
+          .sort((a, b) => (b.rank ?? 0) - (a.rank ?? 0))
+          .slice(0, 15),
+        rejected: discoveredBlogLinks
+          .filter((item) => !item.accepted)
+          .slice(0, 15),
+      });
+
       const blogPostUrls = collectHubDetailUrls({
         html: blogArtifact.html,
         listingUrl: blogListingPage.url,
@@ -1165,8 +1276,44 @@ export async function crawlPages(
         console.log("[crawl] blog detail plan", { urls: blogPostUrls });
         await fetchUrlBatch(blogPostUrls);
         syncCrawledUrlSet();
+
+        console.log("[crawl][blog] fetched detail signals", {
+          plannedCount: blogPostUrls.length,
+          pages: blogPostUrls.map((url) => {
+            const artifact = artifacts.get(canonicalizeUrl(url));
+            const page = artifact?.page;
+            return {
+              requestedUrl: url,
+              fetched: Boolean(page),
+              source: artifact?.source ?? null,
+              parsedUrl: page?.url ?? null,
+              title: page?.title ?? null,
+              dateModified: page?.dateModified ?? null,
+              wordCount: page?.wordCount ?? null,
+              schemaTypes:
+                page?.schemas
+                  .flatMap((schema) =>
+                    [...schema.matchAll(/"@type"\s*:\s*"([^"]+)"/gi)].map(
+                      (match) => match[1],
+                    ),
+                  )
+                  .filter((value, index, values) => values.indexOf(value) === index)
+                  .slice(0, 10) ?? [],
+            };
+          }),
+        });
       }
+    } else {
+      console.warn("[crawl][blog] selected listing has no cached artifact", {
+        listingUrl: blogListingPage.url,
+      });
     }
+  } else {
+    console.warn("[crawl][blog] detail discovery skipped", {
+      usedCloudflareSeedCrawl,
+      listingFound: Boolean(blogListingPage),
+      remainingCapacity: remainingCapacity(),
+    });
   }
 
   const caseStudiesPage = pages.find((page) =>

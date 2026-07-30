@@ -450,6 +450,37 @@ export function parseHTML(
     articleTime,
   );
   const wordCount = bodyText ? bodyText.split(/\s+/).filter(Boolean).length : 0;
+  const debugSchemaTypes = [
+    ...new Set(
+      schemas.flatMap((schema) =>
+        [...schema.matchAll(/"@type"\s*:\s*"([^"]+)"/gi)]
+          .map((match) => match[1])
+          .filter(Boolean),
+      ),
+    ),
+  ];
+  const looksLikeBlogContent =
+    debugSchemaTypes.some((type) =>
+      /^(?:article|blogposting|newsarticle)$/i.test(type),
+    ) ||
+    /\/(?:blog|blogs|post|posts|article|articles|insight|insights|news)(?:\/|$)/i.test(
+      new URL(url).pathname,
+    );
+
+  if (looksLikeBlogContent) {
+    console.log("[parser][blog] date evidence", {
+      url,
+      title,
+      schemaTypes: debugSchemaTypes.slice(0, 10),
+      schemaDate: schemaDateModified,
+      httpLastModified,
+      sitemapLastmod,
+      metaPublished: metaPublished ?? null,
+      articleTime: articleTime ?? null,
+      selectedDate: dateModified,
+      wordCount,
+    });
+  }
 
   return {
     url,
